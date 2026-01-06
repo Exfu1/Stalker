@@ -50,11 +50,11 @@ const plugins = [
 
 for (let plug of await readdir("./plugins")) {
     const manifest = JSON.parse(await readFile(`./plugins/${plug}/manifest.json`));
-    const outPath = `./dist/${plug}/index.js`;
+    const outPath = `./docs/${plug}/index.js`;
 
     try {
         // Ensure dist directory exists
-        await mkdir(`./dist/${plug}`, { recursive: true });
+        await mkdir(`./docs/${plug}`, { recursive: true });
 
         const bundle = await rollup({
             input: `./plugins/${plug}/${manifest.main}`,
@@ -81,7 +81,7 @@ for (let plug of await readdir("./plugins")) {
         const toHash = await readFile(outPath);
         manifest.hash = createHash("sha256").update(toHash).digest("hex");
         manifest.main = "index.js";
-        await writeFile(`./dist/${plug}/manifest.json`, JSON.stringify(manifest));
+        await writeFile(`./docs/${plug}/manifest.json`, JSON.stringify(manifest));
 
         console.log(`Successfully built ${manifest.name}!`);
     } catch (e) {
