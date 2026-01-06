@@ -1,17 +1,13 @@
-(() => {
+(function (exports, metro, common, ui, assets, toasts, storage, plugin, components, patcher) {
     "use strict";
 
-    // Vendetta module shims
-    const metro = vendetta.metro;
+    // Find modules
     const { findByStoreName, findByProps } = metro;
-    const { React } = metro.common;
-    const { after } = vendetta.patcher;
-    const { showToast } = vendetta.ui.toasts;
-    const { getAssetIDByName } = vendetta.ui.assets;
-    const { Forms, General } = vendetta.ui.components;
-
-    const { FormSection, FormRow, FormDivider } = Forms;
-    const { ScrollView, View, Text } = General;
+    const { React, ReactNative } = common;
+    const { View, Text, Pressable, ScrollView } = components.General || findByProps("View", "Text");
+    const { FormSection, FormRow, FormDivider } = components.Forms || findByProps("FormSection", "FormRow");
+    const { getAssetIDByName } = assets;
+    const { showToast } = toasts;
 
     // Discord stores
     const UserStore = findByStoreName("UserStore");
@@ -20,7 +16,8 @@
     const MessageStore = findByStoreName("MessageStore");
     const GuildMemberStore = findByStoreName("GuildMemberStore");
 
-    let unpatch = null;
+    // Track patches
+    const patches = [];
 
     // Get mutual guilds with a user
     function getMutualGuilds(userId) {
@@ -39,13 +36,13 @@
         for (let i = 0; i < mutualGuilds.length; i++) {
             const guild = mutualGuilds[i];
             try {
-                const channels = ChannelStore ? Object.values(ChannelStore.getChannels() || {}) : [];
-                const textChannels = channels.filter(c => c.guild_id === guild.id && c.type === 0);
+                const channels = ChannelStore ? Object.values(ChannelStore.getChannels?.() || ChannelStore.getMutableGuildChannels?.() || {}) : [];
+                const textChannels = channels.filter(function (c) { return c.guild_id === guild.id && c.type === 0; });
                 for (let j = 0; j < textChannels.length; j++) {
                     const channel = textChannels[j];
                     const messages = MessageStore ? MessageStore.getMessages(channel.id) : null;
                     if (messages && messages._array) {
-                        const userMsgs = messages._array.filter(m => m.author && m.author.id === userId);
+                        const userMsgs = messages._array.filter(function (m) { return m.author && m.author.id === userId; });
                         for (let k = 0; k < Math.min(userMsgs.length, 3); k++) {
                             results.push({
                                 id: userMsgs[k].id,
@@ -61,13 +58,13 @@
         return results.slice(0, 10);
     }
 
-    // Plugin export
-    const plugin = {
+    // Plugin definition
+    var pluginExport = {
         onLoad: function () {
             try {
                 const UserProfile = findByProps("UserProfileSection");
                 if (UserProfile && UserProfile.default) {
-                    unpatch = after("default", UserProfile, (args, res) => {
+                    patches.push(patcher.after("default", UserProfile, function (args, res) {
                         const userId = args[0] ? args[0].userId : null;
                         if (!userId) return res;
 
@@ -85,7 +82,7 @@
                                     key: "recent",
                                     label: "Recent Messages",
                                     subLabel: "Find their messages across servers",
-                                    trailing: React.createElement(FormRow.Arrow, null),
+                                    trailing: FormRow.Arrow ? React.createElement(FormRow.Arrow, null) : null,
                                     onPress: function () {
                                         const msgs = findRecentMessages(userId, mutualGuilds);
                                         showToast("Found " + msgs.length + " messages", getAssetIDByName("Check"));
@@ -96,7 +93,7 @@
                                     key: "hidden",
                                     label: "Hidden Channels",
                                     subLabel: "Channels they can see but you can't",
-                                    trailing: React.createElement(FormRow.Arrow, null),
+                                    trailing: FormRow.Arrow ? React.createElement(FormRow.Arrow, null) : null,
                                     onPress: function () {
                                         showToast("Checking " + mutualGuilds.length + " servers", getAssetIDByName("Check"));
                                     }
@@ -106,7 +103,7 @@
                             res.props.children.push(stalkerSection);
                         }
                         return res;
-                    });
+                    }));
                 }
                 showToast("Stalker Pro loaded!", getAssetIDByName("Check"));
             } catch (e) {
@@ -114,10 +111,13 @@
             }
         },
         onUnload: function () {
-            if (unpatch) unpatch();
+            for (const unpatch of patches) {
+                if (unpatch) unpatch();
+            }
         }
     };
 
-    // Export for Vendetta
-    return { default: plugin, __esModule: true };
-})();
+    exports.default = pluginExport;
+    Object.defineProperty(exports, "__esModule", { value: true });
+    return exports;
+})({}, vendetta.metro, vendetta.metro.common, vendetta.ui, vendetta.ui.assets, vendetta.ui.toasts, vendetta.storage, vendetta.plugin, vendetta.ui.components, vendetta.patcher);
