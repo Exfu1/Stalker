@@ -1,0 +1,14 @@
+{
+    "name": "Stalker Pro",
+    "description": "Track user activity - Recent Messages & Hidden Channels",
+    "authors": [
+        {
+            "name": "StalkerPro",
+            "id": "000000000000000000"
+        }
+    ],
+    "main": "src/index.ts",
+    "vendetta": {
+        "icon": "ic_search"
+    }
+}

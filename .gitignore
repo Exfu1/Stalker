@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Build output - but we want to keep dist for GitHub Pages
+# dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Package manager locks (optional, but can cause conflicts)
+package-lock.json
+pnpm-lock.yaml
