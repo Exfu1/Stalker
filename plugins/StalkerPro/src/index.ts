@@ -81,70 +81,119 @@ function findRecentMessages(userId: string, mutualGuilds: any[]) {
 
 export const onLoad = () => {
     try {
-        const UserProfile = findByProps("UserProfileSection");
+        showToast("Stalker Pro: Initializing...", getAssetIDByName("Check"));
 
-        if (UserProfile?.default) {
-            patches.push(
-                after("default", UserProfile, (args: any[], res: any) => {
-                    const userId = args[0]?.userId;
-                    if (!userId) return res;
+        // Debug: Try multiple ways to find UserProfile
+        const UserProfile1 = findByProps("UserProfileSection");
+        const UserProfile2 = findByProps("default", "UserProfileSection");
+        const UserProfile3 = findByProps("UserProfileBody");
+        const UserProfile4 = findByProps("UserProfileHeader");
 
-                    // Don't show for yourself
-                    const currentUser = UserStore?.getCurrentUser();
-                    if (currentUser && userId === currentUser.id) return res;
+        // Log what we found
+        logger.log("UserProfile1 (UserProfileSection):", UserProfile1 ? "FOUND" : "NULL");
+        logger.log("UserProfile2 (default, UserProfileSection):", UserProfile2 ? "FOUND" : "NULL");
+        logger.log("UserProfile3 (UserProfileBody):", UserProfile3 ? "FOUND" : "NULL");
+        logger.log("UserProfile4 (UserProfileHeader):", UserProfile4 ? "FOUND" : "NULL");
 
-                    // Check if we can inject into the result
-                    if (res?.props?.children && Array.isArray(res.props.children)) {
-                        const mutualGuilds = getMutualGuilds(userId);
+        // Try the first one that works
+        const UserProfile = UserProfile1 || UserProfile2 || UserProfile3 || UserProfile4;
 
-                        const stalkerSection = React.createElement(
-                            FormSection,
-                            { key: "stalker-pro", title: "🔍 Stalker Pro" },
-                            [
-                                React.createElement(FormRow, {
-                                    key: "recent",
-                                    label: "Recent Messages",
-                                    subLabel: "Find their messages across servers",
-                                    trailing: FormRow.Arrow
-                                        ? React.createElement(FormRow.Arrow, null)
-                                        : null,
-                                    onPress: () => {
-                                        const msgs = findRecentMessages(userId, mutualGuilds);
-                                        showToast(
-                                            `Found ${msgs.length} messages`,
-                                            getAssetIDByName("Check")
-                                        );
-                                    }
-                                }),
-                                React.createElement(FormDivider, { key: "div" }),
-                                React.createElement(FormRow, {
-                                    key: "hidden",
-                                    label: "Hidden Channels",
-                                    subLabel: "Channels they can see but you can't",
-                                    trailing: FormRow.Arrow
-                                        ? React.createElement(FormRow.Arrow, null)
-                                        : null,
-                                    onPress: () => {
-                                        showToast(
-                                            `Checking ${mutualGuilds.length} servers`,
-                                            getAssetIDByName("Check")
-                                        );
-                                    }
-                                })
-                            ]
-                        );
-
-                        res.props.children.push(stalkerSection);
-                    }
-
-                    return res;
-                })
-            );
+        if (!UserProfile) {
+            showToast("Stalker Pro: No profile module found!", getAssetIDByName("Small"));
+            logger.error("Could not find any UserProfile module");
+            return;
         }
+
+        // Log what method exists on it
+        const keys = Object.keys(UserProfile);
+        logger.log("UserProfile keys:", keys.slice(0, 10).join(", "));
+
+        // Try to find what to patch
+        const patchTarget = UserProfile.default || UserProfile.UserProfileSection || UserProfile.UserProfileBody;
+
+        if (!patchTarget) {
+            showToast("Stalker Pro: No patch target found!", getAssetIDByName("Small"));
+            logger.error("UserProfile found but no patchable target. Keys:", keys.join(", "));
+            return;
+        }
+
+        // Determine which property to patch
+        const patchProp = UserProfile.default ? "default" :
+            UserProfile.UserProfileSection ? "UserProfileSection" :
+                "UserProfileBody";
+
+        logger.log("Attempting to patch:", patchProp);
+        showToast(`Stalker Pro: Patching ${patchProp}...`, getAssetIDByName("Check"));
+
+        patches.push(
+            after(patchProp, UserProfile, (args: any[], res: any) => {
+                logger.log("Profile patch triggered! Args:", args?.length);
+
+                const userId = args[0]?.userId || args[0]?.user?.id;
+                if (!userId) {
+                    logger.log("No userId found in args");
+                    return res;
+                }
+
+                // Don't show for yourself
+                const currentUser = UserStore?.getCurrentUser();
+                if (currentUser && userId === currentUser.id) return res;
+
+                // Check if we can inject into the result
+                if (res?.props?.children && Array.isArray(res.props.children)) {
+                    const mutualGuilds = getMutualGuilds(userId);
+
+                    const stalkerSection = React.createElement(
+                        FormSection,
+                        { key: "stalker-pro", title: "🔍 Stalker Pro" },
+                        [
+                            React.createElement(FormRow, {
+                                key: "recent",
+                                label: "Recent Messages",
+                                subLabel: "Find their messages across servers",
+                                trailing: FormRow.Arrow
+                                    ? React.createElement(FormRow.Arrow, null)
+                                    : null,
+                                onPress: () => {
+                                    const msgs = findRecentMessages(userId, mutualGuilds);
+                                    showToast(
+                                        `Found ${msgs.length} messages`,
+                                        getAssetIDByName("Check")
+                                    );
+                                }
+                            }),
+                            React.createElement(FormDivider, { key: "div" }),
+                            React.createElement(FormRow, {
+                                key: "hidden",
+                                label: "Hidden Channels",
+                                subLabel: "Channels they can see but you can't",
+                                trailing: FormRow.Arrow
+                                    ? React.createElement(FormRow.Arrow, null)
+                                    : null,
+                                onPress: () => {
+                                    showToast(
+                                        `Checking ${mutualGuilds.length} servers`,
+                                        getAssetIDByName("Check")
+                                    );
+                                }
+                            })
+                        ]
+                    );
+
+                    res.props.children.push(stalkerSection);
+                    logger.log("Stalker section injected!");
+                } else {
+                    logger.log("Cannot inject - res.props.children not an array");
+                }
+
+                return res;
+            })
+        );
 
         showToast("Stalker Pro loaded!", getAssetIDByName("Check"));
         logger.log("Stalker Pro plugin loaded successfully");
     } catch (e) {
+        showToast("Stalker Pro: Error loading!", getAssetIDByName("Small"));
         logger.error("Stalker Pro load error:", e);
     }
 };
