@@ -1,19 +1,26 @@
 import { logger } from "@vendetta";
 import { findByStoreName, findByProps } from "@vendetta/metro";
-import { React, NavigationNative } from "@vendetta/metro/common";
+import { React, NavigationNative, ReactNative } from "@vendetta/metro/common";
 import { Forms, General } from "@vendetta/ui/components";
 import { getAssetIDByName } from "@vendetta/ui/assets";
 import { showToast } from "@vendetta/ui/toasts";
 
 const { FormSection, FormRow, FormDivider, FormInput } = Forms;
-const { ScrollView, View, Text } = General;
+const { ScrollView, View, Text, TouchableOpacity, ActivityIndicator } = General;
 
-// Discord stores
+// Discord stores and utilities
 const UserStore = findByStoreName("UserStore");
 const GuildStore = findByStoreName("GuildStore");
-const ChannelStore = findByStoreName("ChannelStore");
-const MessageStore = findByStoreName("MessageStore");
 const GuildMemberStore = findByStoreName("GuildMemberStore");
+const ChannelStore = findByStoreName("ChannelStore");
+
+// Try to find navigation/transitioner utilities
+const NavigationUtils = findByProps("transitionToGuild") || findByProps("transitionTo");
+const MessageLinkUtils = findByProps("jumpToMessage") || findByProps("transitionToGuildSync");
+const SearchUtils = findByProps("searchGuildMessages") || findByProps("search");
+
+// REST API for fetching messages
+const RestAPI = findByProps("getAPIBaseURL", "get") || findByProps("API_HOST", "get");
 
 // Store the target user ID
 let targetUserId: string = "";
@@ -41,51 +48,111 @@ function getMutualGuilds(userId: string) {
 }
 
 /**
- * Find recent messages from a user across mutual servers
+ * Navigate to a guild
  */
-function findRecentMessages(userId: string, mutualGuilds: any[]) {
-    const results: any[] = [];
-
-    for (const guild of mutualGuilds) {
-        try {
-            const channels = ChannelStore
-                ? Object.values(ChannelStore.getChannels?.() || ChannelStore.getMutableGuildChannels?.() || {})
-                : [];
-
-            // Filter to text channels in this guild
-            const textChannels = channels.filter((c: any) =>
-                c.guild_id === guild.id && c.type === 0
-            );
-
-            for (const channel of textChannels) {
-                const messages = MessageStore?.getMessages((channel as any).id);
-
-                if (messages?._array) {
-                    const userMsgs = messages._array.filter((m: any) =>
-                        m.author?.id === userId
-                    );
-
-                    // Get up to 3 messages per channel
-                    for (let k = 0; k < Math.min(userMsgs.length, 3); k++) {
-                        results.push({
-                            id: userMsgs[k].id,
-                            content: (userMsgs[k].content || "").substring(0, 100),
-                            channel: (channel as any).name,
-                            guild: guild.name,
-                            timestamp: userMsgs[k].timestamp
-                        });
-                    }
-                }
-            }
-        } catch (e) {
-            // Silently continue on errors
+function navigateToGuild(guildId: string) {
+    try {
+        if (NavigationUtils?.transitionToGuild) {
+            NavigationUtils.transitionToGuild(guildId);
+            return true;
+        } else if (NavigationUtils?.transitionTo) {
+            NavigationUtils.transitionTo(`/channels/${guildId}`);
+            return true;
         }
+    } catch (e) {
+        logger.error("Error navigating to guild:", e);
     }
+    return false;
+}
 
-    // Sort by timestamp, newest first
-    results.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+/**
+ * Navigate to a specific message
+ */
+function navigateToMessage(guildId: string, channelId: string, messageId: string) {
+    try {
+        if (MessageLinkUtils?.jumpToMessage) {
+            MessageLinkUtils.jumpToMessage({
+                guildId,
+                channelId,
+                messageId
+            });
+            return true;
+        } else if (NavigationUtils?.transitionTo) {
+            NavigationUtils.transitionTo(`/channels/${guildId}/${channelId}/${messageId}`);
+            return true;
+        }
+    } catch (e) {
+        logger.error("Error navigating to message:", e);
+    }
+    return false;
+}
 
-    return results.slice(0, 15);
+/**
+ * Search for messages from a user in a specific guild using Discord's search API
+ */
+async function searchMessagesInGuild(guildId: string, authorId: string): Promise<any[]> {
+    try {
+        // Use Discord's internal REST API
+        if (!RestAPI?.get) {
+            logger.error("RestAPI not found");
+            return [];
+        }
+
+        const response = await RestAPI.get({
+            url: `/guilds/${guildId}/messages/search`,
+            query: {
+                author_id: authorId,
+                include_nsfw: true
+            }
+        });
+
+        if (response?.body?.messages) {
+            // Discord returns nested arrays, flatten and map
+            return response.body.messages.map((msgArray: any[]) => {
+                const msg = msgArray[0]; // First message in the context
+                return {
+                    id: msg.id,
+                    content: msg.content || "[No text content]",
+                    channelId: msg.channel_id,
+                    guildId: guildId,
+                    timestamp: msg.timestamp,
+                    attachments: msg.attachments?.length || 0
+                };
+            });
+        }
+
+        return [];
+    } catch (e: any) {
+        // 403 means no access, which is expected for some channels
+        if (e?.status !== 403) {
+            logger.error(`Error searching messages in guild ${guildId}:`, e?.message || e);
+        }
+        return [];
+    }
+}
+
+/**
+ * Get channel name by ID
+ */
+function getChannelName(channelId: string): string {
+    try {
+        const channel = ChannelStore?.getChannel(channelId);
+        return channel?.name || "unknown-channel";
+    } catch {
+        return "unknown-channel";
+    }
+}
+
+/**
+ * Get guild name by ID
+ */
+function getGuildName(guildId: string): string {
+    try {
+        const guild = GuildStore?.getGuild(guildId);
+        return guild?.name || "Unknown Server";
+    } catch {
+        return "Unknown Server";
+    }
 }
 
 /**
@@ -116,14 +183,18 @@ function StalkerSettings() {
     const [userInfo, setUserInfo] = React.useState<any>(null);
     const [mutualServers, setMutualServers] = React.useState<any[]>([]);
     const [isSearching, setIsSearching] = React.useState(false);
+    const [searchProgress, setSearchProgress] = React.useState("");
+    const [selectedGuild, setSelectedGuild] = React.useState<string | null>(null);
 
-    const handleSearch = () => {
+    const handleSearch = async () => {
         if (!userId || userId.length < 17) {
-            showToast("Please enter a valid User ID", getAssetIDByName("Small"));
+            showToast("Please enter a valid User ID (17-19 digits)", getAssetIDByName("Small"));
             return;
         }
 
         setIsSearching(true);
+        setResults([]);
+        setSearchProgress("Finding mutual servers...");
         targetUserId = userId;
 
         try {
@@ -135,18 +206,85 @@ function StalkerSettings() {
             const guilds = getMutualGuilds(userId);
             setMutualServers(guilds);
 
-            // Find messages
-            const msgs = findRecentMessages(userId, guilds);
-            setResults(msgs);
+            if (guilds.length === 0) {
+                showToast("No mutual servers found with this user", getAssetIDByName("Small"));
+                setIsSearching(false);
+                return;
+            }
+
+            // Search for messages in each guild
+            const allMessages: any[] = [];
+
+            for (let i = 0; i < guilds.length; i++) {
+                const guild = guilds[i];
+                setSearchProgress(`Searching ${guild.name} (${i + 1}/${guilds.length})...`);
+
+                try {
+                    const messages = await searchMessagesInGuild(guild.id, userId);
+                    allMessages.push(...messages);
+                } catch (e) {
+                    // Continue with other guilds
+                }
+
+                // Small delay to avoid rate limiting
+                if (i < guilds.length - 1) {
+                    await new Promise(r => setTimeout(r, 300));
+                }
+            }
+
+            // Sort by timestamp, newest first
+            allMessages.sort((a, b) =>
+                new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+            );
+
+            setResults(allMessages.slice(0, 50)); // Limit to 50 most recent
+            setSearchProgress("");
 
             showToast(
-                `Found ${msgs.length} messages in ${guilds.length} servers`,
+                `Found ${allMessages.length} messages in ${guilds.length} servers`,
+                getAssetIDByName("Check")
+            );
+        } catch (e: any) {
+            showToast("Error: " + (e?.message || "Unknown error"), getAssetIDByName("Small"));
+            logger.error("Search error:", e);
+        } finally {
+            setIsSearching(false);
+            setSearchProgress("");
+        }
+    };
+
+    const handleSearchInGuild = async (guild: any) => {
+        setSelectedGuild(guild.id);
+        setIsSearching(true);
+        setSearchProgress(`Searching in ${guild.name}...`);
+
+        try {
+            const messages = await searchMessagesInGuild(guild.id, userId);
+
+            messages.sort((a: any, b: any) =>
+                new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+            );
+
+            setResults(messages);
+
+            showToast(
+                `Found ${messages.length} messages in ${guild.name}`,
                 getAssetIDByName("Check")
             );
         } catch (e: any) {
             showToast("Error searching: " + (e?.message || "Unknown"), getAssetIDByName("Small"));
         } finally {
             setIsSearching(false);
+            setSearchProgress("");
+        }
+    };
+
+    const formatTimestamp = (ts: string) => {
+        try {
+            const date = new Date(ts);
+            return date.toLocaleDateString() + " " + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        } catch {
+            return ts;
         }
     };
 
@@ -157,30 +295,29 @@ function StalkerSettings() {
             // Search Section
             React.createElement(
                 FormSection,
-                { key: "search", title: "🔍 User Search" },
+                { key: "search", title: "🔍 USER SEARCH" },
                 [
                     React.createElement(FormInput, {
                         key: "input",
                         title: "User ID",
-                        placeholder: "Enter Discord User ID (e.g. 123456789012345678)",
+                        placeholder: "Enter Discord User ID",
                         value: userId,
                         onChangeText: setUserId,
                         keyboardType: "numeric"
                     }),
                     React.createElement(FormRow, {
                         key: "searchBtn",
-                        label: isSearching ? "Searching..." : "🔍 Search User",
-                        subLabel: "Find their messages and activity",
-                        onPress: handleSearch,
-                        disabled: isSearching
+                        label: isSearching ? "⏳ Searching..." : "🔍 Search All Servers",
+                        subLabel: isSearching ? searchProgress : "Search for messages across all mutual servers",
+                        onPress: isSearching ? undefined : handleSearch
                     })
                 ]
             ),
 
-            // User Info Section (if found)
+            // User Info Section
             userInfo && React.createElement(
                 FormSection,
-                { key: "userInfo", title: "👤 User Info" },
+                { key: "userInfo", title: "👤 USER INFO" },
                 [
                     React.createElement(FormRow, {
                         key: "name",
@@ -195,50 +332,85 @@ function StalkerSettings() {
                 ]
             ),
 
-            // Mutual Servers Section
+            // Mutual Servers Section - Now clickable!
             mutualServers.length > 0 && React.createElement(
                 FormSection,
-                { key: "servers", title: `🏠 Mutual Servers (${mutualServers.length})` },
-                mutualServers.slice(0, 10).map((guild: any, index: number) =>
+                { key: "servers", title: `🏠 MUTUAL SERVERS (${mutualServers.length}) - Tap to search` },
+                mutualServers.map((guild: any, index: number) =>
                     React.createElement(FormRow, {
                         key: `server-${index}`,
                         label: guild.name,
-                        subLabel: `ID: ${guild.id}`
+                        subLabel: selectedGuild === guild.id ? "✓ Selected" : "Tap to search messages here",
+                        trailing: FormRow.Arrow ? React.createElement(FormRow.Arrow, null) : null,
+                        onPress: () => handleSearchInGuild(guild)
                     })
                 )
             ),
 
-            // Messages Section
-            results.length > 0 && React.createElement(
+            // Loading indicator
+            isSearching && React.createElement(
+                View,
+                { key: "loading", style: { padding: 20, alignItems: 'center' } },
+                [
+                    React.createElement(ActivityIndicator, { key: "spinner", size: "large", color: "#7289da" }),
+                    React.createElement(Text, {
+                        key: "progress",
+                        style: { color: '#b9bbbe', marginTop: 10, textAlign: 'center' }
+                    }, searchProgress)
+                ]
+            ),
+
+            // Messages Section - Now clickable to jump!
+            !isSearching && results.length > 0 && React.createElement(
                 FormSection,
-                { key: "messages", title: `💬 Recent Messages (${results.length})` },
+                { key: "messages", title: `💬 MESSAGES (${results.length}) - Tap to jump` },
                 results.map((msg: any, index: number) =>
                     React.createElement(
-                        View,
-                        { key: `msg-${index}`, style: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#333' } },
+                        TouchableOpacity,
+                        {
+                            key: `msg-${index}`,
+                            style: {
+                                padding: 12,
+                                borderBottomWidth: 1,
+                                borderBottomColor: '#2f3136',
+                                backgroundColor: '#36393f'
+                            },
+                            onPress: () => {
+                                const success = navigateToMessage(msg.guildId, msg.channelId, msg.id);
+                                if (success) {
+                                    showToast("Jumping to message...", getAssetIDByName("Check"));
+                                } else {
+                                    showToast("Could not navigate to message", getAssetIDByName("Small"));
+                                }
+                            }
+                        },
                         [
                             React.createElement(Text, {
                                 key: "header",
                                 style: { color: '#7289da', fontSize: 12, marginBottom: 4 }
-                            }, `#${msg.channel} • ${msg.guild}`),
+                            }, `#${getChannelName(msg.channelId)} • ${getGuildName(msg.guildId)}`),
                             React.createElement(Text, {
                                 key: "content",
-                                style: { color: '#dcddde', fontSize: 14 }
-                            }, msg.content || "[No text content]")
+                                style: { color: '#dcddde', fontSize: 14, marginBottom: 4 }
+                            }, msg.content.substring(0, 200) + (msg.content.length > 200 ? "..." : "")),
+                            React.createElement(Text, {
+                                key: "time",
+                                style: { color: '#72767d', fontSize: 11 }
+                            }, formatTimestamp(msg.timestamp) + (msg.attachments > 0 ? ` • 📎 ${msg.attachments}` : ""))
                         ]
                     )
                 )
             ),
 
             // No results message
-            results.length === 0 && userId && !isSearching && React.createElement(
+            !isSearching && results.length === 0 && mutualServers.length > 0 && React.createElement(
                 FormSection,
-                { key: "noResults", title: "ℹ️ Results" },
+                { key: "noResults", title: "ℹ️ RESULTS" },
                 [
                     React.createElement(FormRow, {
                         key: "noMsg",
-                        label: "No messages found",
-                        subLabel: "The user may not be in your servers or has no cached messages"
+                        label: "Tap a server above to search",
+                        subLabel: "Or use 'Search All Servers' for a complete search"
                     })
                 ]
             ),
@@ -246,22 +418,22 @@ function StalkerSettings() {
             // Help Section
             React.createElement(
                 FormSection,
-                { key: "help", title: "❓ How to Use" },
+                { key: "help", title: "❓ HOW TO USE" },
                 [
                     React.createElement(FormRow, {
                         key: "h1",
                         label: "1. Get User ID",
-                        subLabel: "Long-press on a user > Copy ID (Developer Mode must be on)"
+                        subLabel: "Long-press user > Copy ID (Dev Mode required)"
                     }),
                     React.createElement(FormRow, {
                         key: "h2",
-                        label: "2. Paste ID above",
-                        subLabel: "Enter the 18-digit User ID"
+                        label: "2. Enter ID & Search",
+                        subLabel: "Searches Discord's API for real messages"
                     }),
                     React.createElement(FormRow, {
                         key: "h3",
-                        label: "3. Tap Search",
-                        subLabel: "Find their messages in mutual servers"
+                        label: "3. Tap Messages",
+                        subLabel: "Jump directly to any message"
                     })
                 ]
             )
@@ -274,7 +446,7 @@ export const settings = StalkerSettings;
 
 export const onLoad = () => {
     logger.log("Stalker Pro: Plugin loaded!");
-    showToast("Stalker Pro loaded! Check plugin settings.", getAssetIDByName("Check"));
+    showToast("Stalker Pro loaded!", getAssetIDByName("Check"));
 };
 
 export const onUnload = () => {
