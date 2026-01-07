@@ -1,5 +1,5 @@
 import { logger } from "@vendetta";
-import { findByStoreName, findByProps } from "@vendetta/metro";
+import { findByStoreName, findByProps, findByName } from "@vendetta/metro";
 import { after } from "@vendetta/patcher";
 import { React } from "@vendetta/metro/common";
 import { Forms } from "@vendetta/ui/components";
@@ -17,6 +17,64 @@ const GuildMemberStore = findByStoreName("GuildMemberStore");
 
 // Active patches to cleanup on unload
 let patches: (() => void)[] = [];
+
+// Helper to try multiple ways to find a module
+function findProfileModule() {
+    // Try various known property names used by Discord over different versions
+    const tryProps = [
+        ["UserProfileSection"],
+        ["default", "UserProfileSection"],
+        ["UserProfileBody"],
+        ["UserProfileHeader"],
+        ["ProfileBanner"],
+        ["UserProfile"],
+        ["default", "UserProfile"],
+        ["UserProfileBanner"],
+        ["ProfileSection"],
+        ["UserSheet"],
+        ["UserProfileSheet"],
+        ["default", "UserProfileSheet"],
+        ["UserProfileOverview"],
+        ["UserProfileConnections"],
+        ["default", "ProfileBanner"],
+    ];
+
+    for (const props of tryProps) {
+        try {
+            const result = findByProps(...props);
+            if (result) {
+                logger.log(`Found module with props: ${props.join(", ")}`);
+                return { module: result, props };
+            }
+        } catch (e) {
+            // Continue trying
+        }
+    }
+
+    // Try findByName as fallback
+    const tryNames = [
+        "UserProfileSection",
+        "UserProfileBody",
+        "UserProfileHeader",
+        "UserProfile",
+        "ProfileBanner",
+        "UserSheet",
+    ];
+
+    for (const name of tryNames) {
+        try {
+            const result = findByName(name, false);
+            if (result) {
+                logger.log(`Found module by name: ${name}`);
+                return { module: result, name };
+            }
+        } catch (e) {
+            // Continue trying
+        }
+    }
+
+    return null;
+}
 
 /**
  * Get all guilds (servers) where both you and the target user are members
@@ -83,47 +141,55 @@ export const onLoad = () => {
     try {
         showToast("Stalker Pro: Initializing...", getAssetIDByName("Check"));
 
-        // Debug: Try multiple ways to find UserProfile
-        const UserProfile1 = findByProps("UserProfileSection");
-        const UserProfile2 = findByProps("default", "UserProfileSection");
-        const UserProfile3 = findByProps("UserProfileBody");
-        const UserProfile4 = findByProps("UserProfileHeader");
+        // Use our helper to find the profile module
+        const profileResult = findProfileModule();
 
-        // Log what we found
-        logger.log("UserProfile1 (UserProfileSection):", UserProfile1 ? "FOUND" : "NULL");
-        logger.log("UserProfile2 (default, UserProfileSection):", UserProfile2 ? "FOUND" : "NULL");
-        logger.log("UserProfile3 (UserProfileBody):", UserProfile3 ? "FOUND" : "NULL");
-        logger.log("UserProfile4 (UserProfileHeader):", UserProfile4 ? "FOUND" : "NULL");
-
-        // Try the first one that works
-        const UserProfile = UserProfile1 || UserProfile2 || UserProfile3 || UserProfile4;
-
-        if (!UserProfile) {
+        if (!profileResult) {
             showToast("Stalker Pro: No profile module found!", getAssetIDByName("Small"));
-            logger.error("Could not find any UserProfile module");
+            logger.error("Could not find any UserProfile module after trying all known patterns");
             return;
         }
+
+        const { module: UserProfile } = profileResult;
 
         // Log what method exists on it
         const keys = Object.keys(UserProfile);
-        logger.log("UserProfile keys:", keys.slice(0, 10).join(", "));
+        logger.log("UserProfile keys:", keys.slice(0, 15).join(", "));
 
-        // Try to find what to patch
-        const patchTarget = UserProfile.default || UserProfile.UserProfileSection || UserProfile.UserProfileBody;
+        // Try to find what to patch - try all known patchable properties
+        const patchableProps = [
+            "default",
+            "UserProfileSection",
+            "UserProfileBody",
+            "UserProfileHeader",
+            "ProfileBanner",
+            "UserProfile",
+            "UserSheet",
+            "render",
+        ];
 
-        if (!patchTarget) {
-            showToast("Stalker Pro: No patch target found!", getAssetIDByName("Small"));
-            logger.error("UserProfile found but no patchable target. Keys:", keys.join(", "));
-            return;
+        let patchProp: string | null = null;
+        for (const prop of patchableProps) {
+            if (UserProfile[prop] && typeof UserProfile[prop] === "function") {
+                patchProp = prop;
+                break;
+            }
         }
 
-        // Determine which property to patch
-        const patchProp = UserProfile.default ? "default" :
-            UserProfile.UserProfileSection ? "UserProfileSection" :
-                "UserProfileBody";
+        if (!patchProp) {
+            // If no function found, try patching the module itself if it's a function
+            if (typeof UserProfile === "function") {
+                showToast("Stalker Pro: Module is a function, trying direct patch", getAssetIDByName("Check"));
+                logger.log("Module is a function, will try alternative approach");
+            } else {
+                showToast("Stalker Pro: No patch target found!", getAssetIDByName("Small"));
+                logger.error("UserProfile found but no patchable target. Keys:", keys.join(", "));
+                return;
+            }
+        }
 
-        logger.log("Attempting to patch:", patchProp);
-        showToast(`Stalker Pro: Patching ${patchProp}...`, getAssetIDByName("Check"));
+        logger.log("Attempting to patch:", patchProp || "direct");
+        showToast(`Stalker Pro: Patching ${patchProp || "module"}...`, getAssetIDByName("Check"));
 
         patches.push(
             after(patchProp, UserProfile, (args: any[], res: any) => {
