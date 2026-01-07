@@ -79,83 +79,81 @@ function findRecentMessages(userId: string, mutualGuilds: any[]) {
     return results.slice(0, 10);
 }
 
-export default {
-    onLoad: () => {
-        try {
-            const UserProfile = findByProps("UserProfileSection");
+export const onLoad = () => {
+    try {
+        const UserProfile = findByProps("UserProfileSection");
 
-            if (UserProfile?.default) {
-                patches.push(
-                    after("default", UserProfile, (args: any[], res: any) => {
-                        const userId = args[0]?.userId;
-                        if (!userId) return res;
+        if (UserProfile?.default) {
+            patches.push(
+                after("default", UserProfile, (args: any[], res: any) => {
+                    const userId = args[0]?.userId;
+                    if (!userId) return res;
 
-                        // Don't show for yourself
-                        const currentUser = UserStore?.getCurrentUser();
-                        if (currentUser && userId === currentUser.id) return res;
+                    // Don't show for yourself
+                    const currentUser = UserStore?.getCurrentUser();
+                    if (currentUser && userId === currentUser.id) return res;
 
-                        // Check if we can inject into the result
-                        if (res?.props?.children && Array.isArray(res.props.children)) {
-                            const mutualGuilds = getMutualGuilds(userId);
+                    // Check if we can inject into the result
+                    if (res?.props?.children && Array.isArray(res.props.children)) {
+                        const mutualGuilds = getMutualGuilds(userId);
 
-                            const stalkerSection = React.createElement(
-                                FormSection,
-                                { key: "stalker-pro", title: "🔍 Stalker Pro" },
-                                [
-                                    React.createElement(FormRow, {
-                                        key: "recent",
-                                        label: "Recent Messages",
-                                        subLabel: "Find their messages across servers",
-                                        trailing: FormRow.Arrow
-                                            ? React.createElement(FormRow.Arrow, null)
-                                            : null,
-                                        onPress: () => {
-                                            const msgs = findRecentMessages(userId, mutualGuilds);
-                                            showToast(
-                                                `Found ${msgs.length} messages`,
-                                                getAssetIDByName("Check")
-                                            );
-                                        }
-                                    }),
-                                    React.createElement(FormDivider, { key: "div" }),
-                                    React.createElement(FormRow, {
-                                        key: "hidden",
-                                        label: "Hidden Channels",
-                                        subLabel: "Channels they can see but you can't",
-                                        trailing: FormRow.Arrow
-                                            ? React.createElement(FormRow.Arrow, null)
-                                            : null,
-                                        onPress: () => {
-                                            showToast(
-                                                `Checking ${mutualGuilds.length} servers`,
-                                                getAssetIDByName("Check")
-                                            );
-                                        }
-                                    })
-                                ]
-                            );
+                        const stalkerSection = React.createElement(
+                            FormSection,
+                            { key: "stalker-pro", title: "🔍 Stalker Pro" },
+                            [
+                                React.createElement(FormRow, {
+                                    key: "recent",
+                                    label: "Recent Messages",
+                                    subLabel: "Find their messages across servers",
+                                    trailing: FormRow.Arrow
+                                        ? React.createElement(FormRow.Arrow, null)
+                                        : null,
+                                    onPress: () => {
+                                        const msgs = findRecentMessages(userId, mutualGuilds);
+                                        showToast(
+                                            `Found ${msgs.length} messages`,
+                                            getAssetIDByName("Check")
+                                        );
+                                    }
+                                }),
+                                React.createElement(FormDivider, { key: "div" }),
+                                React.createElement(FormRow, {
+                                    key: "hidden",
+                                    label: "Hidden Channels",
+                                    subLabel: "Channels they can see but you can't",
+                                    trailing: FormRow.Arrow
+                                        ? React.createElement(FormRow.Arrow, null)
+                                        : null,
+                                    onPress: () => {
+                                        showToast(
+                                            `Checking ${mutualGuilds.length} servers`,
+                                            getAssetIDByName("Check")
+                                        );
+                                    }
+                                })
+                            ]
+                        );
 
-                            res.props.children.push(stalkerSection);
-                        }
+                        res.props.children.push(stalkerSection);
+                    }
 
-                        return res;
-                    })
-                );
-            }
-
-            showToast("Stalker Pro loaded!", getAssetIDByName("Check"));
-            logger.log("Stalker Pro plugin loaded successfully");
-        } catch (e) {
-            logger.error("Stalker Pro load error:", e);
+                    return res;
+                })
+            );
         }
-    },
 
-    onUnload: () => {
-        // Cleanup all patches
-        for (const unpatch of patches) {
-            unpatch?.();
-        }
-        patches = [];
-        logger.log("Stalker Pro plugin unloaded");
+        showToast("Stalker Pro loaded!", getAssetIDByName("Check"));
+        logger.log("Stalker Pro plugin loaded successfully");
+    } catch (e) {
+        logger.error("Stalker Pro load error:", e);
     }
+};
+
+export const onUnload = () => {
+    // Cleanup all patches
+    for (const unpatch of patches) {
+        unpatch?.();
+    }
+    patches = [];
+    logger.log("Stalker Pro plugin unloaded");
 };
