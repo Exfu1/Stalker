@@ -7,7 +7,7 @@ import { showToast } from "@vendetta/ui/toasts";
 import { after } from "@vendetta/patcher";
 
 const { FormSection, FormRow, FormInput } = Forms;
-const { ScrollView, View, Text, TouchableOpacity } = General;
+const { ScrollView, View, Text, TouchableOpacity, TextInput } = General;
 
 // Discord stores
 const UserStore = findByStoreName("UserStore");
@@ -28,39 +28,16 @@ const RestAPI = findByProps("getAPIBaseURL", "get") || findByProps("API_HOST", "
 // Permission constants
 const VIEW_CHANNEL = constants?.Permissions?.VIEW_CHANNEL || 1024;
 
-// All permission bits
 const PERMISSION_NAMES: { [key: number]: string } = {
-    1: "Create Invite",
-    2: "Kick Members",
-    4: "Ban Members",
-    8: "Administrator",
-    16: "Manage Channels",
-    32: "Manage Server",
-    64: "Add Reactions",
-    128: "View Audit Log",
-    256: "Priority Speaker",
-    512: "Stream",
-    1024: "View Channel",
-    2048: "Send Messages",
-    4096: "Send TTS",
-    8192: "Manage Messages",
-    16384: "Embed Links",
-    32768: "Attach Files",
-    65536: "Read History",
-    131072: "Mention Everyone",
-    262144: "Use External Emoji",
-    524288: "View Insights",
-    1048576: "Connect",
-    2097152: "Speak",
-    4194304: "Mute Members",
-    8388608: "Deafen Members",
-    16777216: "Move Members",
-    33554432: "Use VAD",
-    67108864: "Change Nickname",
-    134217728: "Manage Nicknames",
-    268435456: "Manage Roles",
-    536870912: "Manage Webhooks",
-    1073741824: "Manage Emojis",
+    1: "Create Invite", 2: "Kick Members", 4: "Ban Members", 8: "Administrator",
+    16: "Manage Channels", 32: "Manage Server", 64: "Add Reactions", 128: "View Audit Log",
+    256: "Priority Speaker", 512: "Stream", 1024: "View Channel", 2048: "Send Messages",
+    4096: "Send TTS", 8192: "Manage Messages", 16384: "Embed Links", 32768: "Attach Files",
+    65536: "Read History", 131072: "Mention Everyone", 262144: "Use External Emoji",
+    524288: "View Insights", 1048576: "Connect", 2097152: "Speak", 4194304: "Mute Members",
+    8388608: "Deafen Members", 16777216: "Move Members", 33554432: "Use VAD",
+    67108864: "Change Nickname", 134217728: "Manage Nicknames", 268435456: "Manage Roles",
+    536870912: "Manage Webhooks", 1073741824: "Manage Emojis",
 };
 
 // Storage
@@ -96,39 +73,24 @@ interface PermissionOverwrite {
 
 interface ChannelPermissions {
     overwrites: PermissionOverwrite[];
-    userIds: string[]; // Users we need to fetch
+    userIds: string[];
 }
 
 // ========================================
-// FETCH GUILD MEMBERS
+// HELPER FUNCTIONS
 // ========================================
 
 function requestGuildMembers(guildId: string, userIds: string[]) {
     if (!FluxDispatcher || userIds.length === 0) return;
-
     try {
-        FluxDispatcher.dispatch({
-            type: "GUILD_MEMBERS_REQUEST",
-            guildIds: [guildId],
-            userIds: userIds
-        });
-        logger.log(`Requested ${userIds.length} guild members`);
-    } catch (e) {
-        logger.error("Failed to request guild members:", e);
-    }
+        FluxDispatcher.dispatch({ type: "GUILD_MEMBERS_REQUEST", guildIds: [guildId], userIds });
+    } catch { }
 }
-
-// ========================================
-// PERMISSION FUNCTIONS
-// ========================================
 
 function isHidden(channel: any): boolean {
     if (!channel) return false;
-    if (typeof channel === "string") {
-        channel = getChannel?.(channel) || ChannelStore?.getChannel?.(channel);
-    }
+    if (typeof channel === "string") channel = getChannel?.(channel) || ChannelStore?.getChannel?.(channel);
     if (!channel || skipChannels.includes(channel.type)) return false;
-
     channel.realCheck = true;
     const hidden = !Permissions?.can?.(VIEW_CHANNEL, channel);
     delete channel.realCheck;
@@ -144,85 +106,47 @@ function parsePermissionBits(bits: number | string): string[] {
     return perms;
 }
 
-// Get detailed permissions for a channel
 function getChannelPermissions(channel: any, guildId: string): ChannelPermissions {
     const overwrites: PermissionOverwrite[] = [];
     const userIds: string[] = [];
-
     try {
         const rawOverwrites = channel.permissionOverwrites || {};
         const guild = GuildStore?.getGuild?.(guildId);
 
-        logger.log(`Parsing ${Object.keys(rawOverwrites).length} overwrites for channel ${channel.name}`);
-
         for (const [id, ow] of Object.entries(rawOverwrites) as any[]) {
             if (!ow) continue;
-
             const allow = Number(ow.allow || 0);
             const deny = Number(ow.deny || 0);
-
-            // Determine type: 0 = role, 1 = member
             const isRole = ow.type === 0 || ow.type === "role";
             const type = isRole ? 'role' : 'user';
 
-            let name = "";
-            let color = 0;
-            let isUnknown = false;
+            let name = "", color = 0, isUnknown = false;
 
             if (isRole) {
-                // It's a role
-                if (id === guildId) {
-                    name = "@everyone";
-                } else {
+                if (id === guildId) name = "@everyone";
+                else {
                     const role = guild?.roles?.[id];
-                    if (role) {
-                        name = role.name;
-                        color = role.color || 0;
-                    } else {
-                        // Role not found - might be deleted or special
-                        name = `Role (${id.slice(-6)})`;
-                        isUnknown = true;
-                    }
+                    if (role) { name = role.name; color = role.color || 0; }
+                    else { name = `Role (${id.slice(-6)})`; isUnknown = true; }
                 }
             } else {
-                // It's a user/member - track for fetching
                 userIds.push(id);
-
-                // Try to get user from cache
                 const user = UserStore?.getUser?.(id);
                 const member = GuildMemberStore?.getMember?.(guildId, id);
-
-                if (user) {
-                    name = member?.nick || user.globalName || user.username;
-                } else {
-                    name = `User (${id.slice(-6)})`;
-                    isUnknown = true;
-                }
+                if (user) name = member?.nick || user.globalName || user.username;
+                else { name = `User (${id.slice(-6)})`; isUnknown = true; }
             }
 
-            overwrites.push({
-                id,
-                name,
-                type,
-                color,
-                allowed: parsePermissionBits(allow),
-                denied: parsePermissionBits(deny),
-                isUnknown
-            });
+            overwrites.push({ id, name, type, color, allowed: parsePermissionBits(allow), denied: parsePermissionBits(deny), isUnknown });
         }
 
-        // Sort: @everyone first, then roles, then users
         overwrites.sort((a, b) => {
             if (a.name === "@everyone") return -1;
             if (b.name === "@everyone") return 1;
             if (a.type !== b.type) return a.type === 'role' ? -1 : 1;
             return a.name.localeCompare(b.name);
         });
-
-    } catch (e) {
-        logger.error("getChannelPermissions error:", e);
-    }
-
+    } catch { }
     return { overwrites, userIds };
 }
 
@@ -259,8 +183,34 @@ function getHiddenChannels(guildId: string): HiddenChannel[] {
                 });
             }
         }
-    } catch (e) { logger.error("getHiddenChannels error:", e); }
+    } catch { }
     return hidden.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Check if a user can access a hidden channel based on their roles
+function canUserAccessChannel(userId: string, channel: HiddenChannel, guildId: string): boolean {
+    const member = GuildMemberStore?.getMember?.(guildId, userId);
+    if (!member) return false;
+
+    const memberRoles = member.roles || [];
+
+    for (const ow of channel.permissions.overwrites) {
+        // Check if user has direct access
+        if (ow.type === 'user' && ow.id === userId && ow.allowed.includes("View Channel")) {
+            return true;
+        }
+        // Check if user has a role with access
+        if (ow.type === 'role' && memberRoles.includes(ow.id) && ow.allowed.includes("View Channel")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Get hidden channels a specific user can access
+function getUserAccessibleHiddenChannels(userId: string, guildId: string): HiddenChannel[] {
+    const allHidden = getHiddenChannels(guildId);
+    return allHidden.filter(ch => canUserAccessChannel(userId, ch, guildId));
 }
 
 // ========================================
@@ -329,25 +279,30 @@ async function checkClipboardContent() {
 // ========================================
 
 function StalkerSettings() {
-    const [activeTab, setActiveTab] = React.useState<'hidden' | 'perms' | 'search'>('hidden');
+    const [activeTab, setActiveTab] = React.useState<'hidden' | 'perms' | 'user' | 'search'>('hidden');
     const [hiddenChannels, setHiddenChannels] = React.useState<HiddenChannel[]>([]);
     const [isScanning, setIsScanning] = React.useState(false);
     const [selectedGuild, setSelectedGuild] = React.useState<any>(null);
     const [selectedChannel, setSelectedChannel] = React.useState<HiddenChannel | null>(null);
     const [debugInfo, setDebugInfo] = React.useState("");
-    const [userId, setUserId] = React.useState("");
-    const [isSearchingUser, setIsSearchingUser] = React.useState(false);
+
+    // User lookup state
+    const [lookupUserId, setLookupUserId] = React.useState("");
+    const [userAccessChannels, setUserAccessChannels] = React.useState<HiddenChannel[]>([]);
+    const [lookupUserInfo, setLookupUserInfo] = React.useState<any>(null);
+    const [isLookingUp, setIsLookingUp] = React.useState(false);
+
+    // Message search state
+    const [searchUserId, setSearchUserId] = React.useState("");
+    const [isSearching, setIsSearching] = React.useState(false);
+
     const [, forceUpdate] = React.useState(0);
 
     React.useEffect(() => { scanCurrentGuild(); }, []);
 
-    // Re-fetch permissions when channel selected to get updated member data
     React.useEffect(() => {
         if (selectedChannel && selectedChannel.permissions.userIds.length > 0) {
-            // Request member data for users in this channel
             requestGuildMembers(selectedChannel.guildId, selectedChannel.permissions.userIds);
-
-            // Re-render after short delay to pick up fetched data
             const timer = setTimeout(() => forceUpdate(n => n + 1), 1000);
             return () => clearTimeout(timer);
         }
@@ -372,73 +327,104 @@ function StalkerSettings() {
         finally { setIsScanning(false); }
     };
 
-    // Refresh the selected channel's permissions
     const refreshSelectedChannel = () => {
         if (selectedChannel && selectedGuild) {
             const channel = ChannelStore?.getChannel?.(selectedChannel.id);
             if (channel) {
-                const updated: HiddenChannel = {
-                    ...selectedChannel,
-                    permissions: getChannelPermissions(channel, selectedGuild.id)
-                };
-                setSelectedChannel(updated);
+                setSelectedChannel({ ...selectedChannel, permissions: getChannelPermissions(channel, selectedGuild.id) });
                 showToast("🔄 Refreshed!", getAssetIDByName("Check"));
             }
         }
     };
 
-    const handleUserSearch = async () => {
-        if (!userId || userId.length < 17) return;
-        setIsSearchingUser(true);
-        await autoSearchUser(userId);
-        setIsSearchingUser(false);
+    const handleUserLookup = () => {
+        const cleanId = lookupUserId.trim();
+        if (!cleanId || cleanId.length < 17) { showToast("Enter valid ID", getAssetIDByName("Small")); return; }
+        if (!selectedGuild) { showToast("Open a server first", getAssetIDByName("Small")); return; }
+
+        setIsLookingUp(true);
+
+        // Request member data
+        requestGuildMembers(selectedGuild.id, [cleanId]);
+
+        setTimeout(() => {
+            const user = UserStore?.getUser?.(cleanId);
+            const member = GuildMemberStore?.getMember?.(selectedGuild.id, cleanId);
+            setLookupUserInfo({ user, member, id: cleanId });
+
+            const accessible = getUserAccessibleHiddenChannels(cleanId, selectedGuild.id);
+            setUserAccessChannels(accessible);
+
+            showToast(`👤 ${accessible.length} hidden channels accessible`, getAssetIDByName("Check"));
+            setIsLookingUp(false);
+        }, 500);
+    };
+
+    const handleMessageSearch = async () => {
+        const cleanId = searchUserId.trim();
+        if (!cleanId || cleanId.length < 17) { showToast("Enter valid ID", getAssetIDByName("Small")); return; }
+        setIsSearching(true);
+        await autoSearchUser(cleanId);
+        setIsSearching(false);
+    };
+
+    const pasteFromClipboard = async (setter: (v: string) => void) => {
+        try {
+            const content = await Clipboard?.getString?.();
+            if (content) {
+                setter(content.trim());
+                showToast("📋 Pasted!", getAssetIDByName("Check"));
+            }
+        } catch { }
     };
 
     const roleColor = (c: number) => c ? `#${c.toString(16).padStart(6, '0')}` : '#99AAB5';
 
     const TabBtn = ({ id, label, icon }: any) =>
         React.createElement(TouchableOpacity, {
-            style: { flex: 1, padding: 10, backgroundColor: activeTab === id ? '#5865F2' : '#2b2d31', borderRadius: 8, marginHorizontal: 2 },
+            style: { flex: 1, padding: 8, backgroundColor: activeTab === id ? '#5865F2' : '#2b2d31', borderRadius: 8, marginHorizontal: 2 },
             onPress: () => { setActiveTab(id); if (id !== 'perms') setSelectedChannel(null); }
-        }, React.createElement(Text, { style: { color: '#fff', textAlign: 'center', fontSize: 12, fontWeight: activeTab === id ? 'bold' : 'normal' } }, `${icon} ${label}`));
+        }, React.createElement(Text, { style: { color: '#fff', textAlign: 'center', fontSize: 11, fontWeight: activeTab === id ? 'bold' : 'normal' } }, `${icon}${label}`));
+
+    // Reusable channel card
+    const ChannelCard = ({ ch, onPress }: { ch: HiddenChannel, onPress: () => void }) =>
+        React.createElement(TouchableOpacity, { style: { margin: 8, marginTop: 4, padding: 12, backgroundColor: '#2b2d31', borderRadius: 12, borderLeftWidth: 4, borderLeftColor: '#5865F2' }, onPress }, [
+            React.createElement(View, { key: 'h', style: { flexDirection: 'row', alignItems: 'center' } }, [
+                React.createElement(Text, { key: 'i', style: { fontSize: 16, marginRight: 8 } }, getChannelTypeName(ch.type)),
+                React.createElement(View, { key: 'n', style: { flex: 1 } }, [
+                    React.createElement(Text, { key: 'nm', style: { color: '#fff', fontSize: 14, fontWeight: 'bold' } }, ch.name),
+                    ch.parentName && React.createElement(Text, { key: 'p', style: { color: '#949ba4', fontSize: 11 } }, `in ${ch.parentName}`)
+                ]),
+                React.createElement(Text, { key: 'a', style: { color: '#5865F2', fontSize: 11 } }, "View →")
+            ]),
+            React.createElement(Text, { key: 'r', style: { color: '#00b894', fontSize: 11, marginTop: 4 } },
+                `🏷️ ${ch.permissions.overwrites.filter(o => o.type === 'role').length} • 👤 ${ch.permissions.overwrites.filter(o => o.type === 'user').length}`)
+        ]);
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         // Header
-        React.createElement(View, { key: 'h', style: { padding: 16, backgroundColor: '#2b2d31', marginBottom: 8 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 20, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v4.2"),
-            React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 12, textAlign: 'center', marginTop: 4 } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
+        React.createElement(View, { key: 'h', style: { padding: 12, backgroundColor: '#2b2d31', marginBottom: 8 } }, [
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 18, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v4.3"),
+            React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 11, textAlign: 'center', marginTop: 2 } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
         // Tabs
-        React.createElement(View, { key: 'tabs', style: { flexDirection: 'row', padding: 8, marginBottom: 8 } }, [
+        React.createElement(View, { key: 'tabs', style: { flexDirection: 'row', padding: 6, marginBottom: 6 } }, [
             React.createElement(TabBtn, { key: '1', id: 'hidden', label: 'Hidden', icon: '🔒' }),
             React.createElement(TabBtn, { key: '2', id: 'perms', label: 'Perms', icon: '🔐' }),
-            React.createElement(TabBtn, { key: '3', id: 'search', label: 'Msgs', icon: '💬' })
+            React.createElement(TabBtn, { key: '3', id: 'user', label: 'User', icon: '👤' }),
+            React.createElement(TabBtn, { key: '4', id: 'search', label: 'Msgs', icon: '💬' })
         ]),
 
         // === HIDDEN TAB ===
         activeTab === 'hidden' && [
-            React.createElement(TouchableOpacity, { key: 'scan', style: { margin: 12, padding: 14, backgroundColor: '#5865F2', borderRadius: 12, alignItems: 'center' }, onPress: scanCurrentGuild },
-                React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold', fontSize: 16 } }, isScanning ? "⏳..." : "🔄 Scan Server")),
-            React.createElement(Text, { key: 'dbg', style: { color: '#949ba4', textAlign: 'center', fontSize: 11, marginBottom: 8 } }, debugInfo),
-
-            ...hiddenChannels.map((ch, i) =>
-                React.createElement(TouchableOpacity, { key: `c${i}`, style: { margin: 8, marginTop: 4, padding: 14, backgroundColor: '#2b2d31', borderRadius: 12, borderLeftWidth: 4, borderLeftColor: '#5865F2' }, onPress: () => { setSelectedChannel(ch); setActiveTab('perms'); } }, [
-                    React.createElement(View, { key: 'h', style: { flexDirection: 'row', alignItems: 'center' } }, [
-                        React.createElement(Text, { key: 'i', style: { fontSize: 18, marginRight: 10 } }, getChannelTypeName(ch.type)),
-                        React.createElement(View, { key: 'n', style: { flex: 1 } }, [
-                            React.createElement(Text, { key: 'nm', style: { color: '#fff', fontSize: 16, fontWeight: 'bold' } }, ch.name),
-                            ch.parentName && React.createElement(Text, { key: 'p', style: { color: '#949ba4', fontSize: 12 } }, `in ${ch.parentName}`)
-                        ]),
-                        React.createElement(Text, { key: 'a', style: { color: '#5865F2', fontSize: 12 } }, "View →")
-                    ]),
-                    React.createElement(Text, { key: 'r', style: { color: '#00b894', fontSize: 12, marginTop: 6 } },
-                        `🏷️ ${ch.permissions.overwrites.filter(o => o.type === 'role').length} roles • 👤 ${ch.permissions.overwrites.filter(o => o.type === 'user').length} users`)
-                ])),
-
+            React.createElement(TouchableOpacity, { key: 'scan', style: { margin: 10, padding: 12, backgroundColor: '#5865F2', borderRadius: 10, alignItems: 'center' }, onPress: scanCurrentGuild },
+                React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold' } }, isScanning ? "⏳..." : "🔄 Scan Server")),
+            React.createElement(Text, { key: 'dbg', style: { color: '#949ba4', textAlign: 'center', fontSize: 10, marginBottom: 6 } }, debugInfo),
+            ...hiddenChannels.map((ch, i) => React.createElement(ChannelCard, { key: `c${i}`, ch, onPress: () => { setSelectedChannel(ch); setActiveTab('perms'); } })),
             hiddenChannels.length === 0 && !isScanning && React.createElement(View, { key: 'empty', style: { padding: 30, alignItems: 'center' } }, [
                 React.createElement(Text, { key: 'e1', style: { fontSize: 40 } }, "🔓"),
-                React.createElement(Text, { key: 'e2', style: { color: '#fff', fontSize: 16, marginTop: 10 } }, selectedGuild ? "No hidden channels" : "Open a server")
+                React.createElement(Text, { key: 'e2', style: { color: '#fff', fontSize: 14, marginTop: 8 } }, selectedGuild ? "No hidden channels" : "Open a server")
             ])
         ],
 
@@ -446,83 +432,120 @@ function StalkerSettings() {
         activeTab === 'perms' && [
             !selectedChannel && React.createElement(View, { key: 'no-sel', style: { padding: 30, alignItems: 'center' } }, [
                 React.createElement(Text, { key: 't1', style: { fontSize: 40 } }, "🔐"),
-                React.createElement(Text, { key: 't2', style: { color: '#fff', fontSize: 16, marginTop: 10 } }, "Select a channel"),
-                React.createElement(Text, { key: 't3', style: { color: '#b5bac1', fontSize: 12, marginTop: 4, textAlign: 'center' } }, "Go to Hidden tab and tap a channel")
+                React.createElement(Text, { key: 't2', style: { color: '#fff', fontSize: 14, marginTop: 8 } }, "Select a channel"),
+                React.createElement(Text, { key: 't3', style: { color: '#b5bac1', fontSize: 11, marginTop: 4 } }, "From Hidden or User tab")
             ]),
-
             selectedChannel && [
-                // Channel header
-                React.createElement(View, { key: 'ch-header', style: { padding: 16, backgroundColor: '#2b2d31', margin: 8, borderRadius: 12 } }, [
-                    React.createElement(View, { key: 'row', style: { flexDirection: 'row', alignItems: 'center' } }, [
-                        React.createElement(Text, { key: 'icon', style: { fontSize: 24, marginRight: 12 } }, getChannelTypeName(selectedChannel.type)),
+                React.createElement(View, { key: 'ch-hdr', style: { padding: 12, backgroundColor: '#2b2d31', margin: 8, borderRadius: 10 } }, [
+                    React.createElement(View, { key: 'r', style: { flexDirection: 'row', alignItems: 'center' } }, [
+                        React.createElement(Text, { key: 'i', style: { fontSize: 22, marginRight: 10 } }, getChannelTypeName(selectedChannel.type)),
                         React.createElement(View, { key: 'info', style: { flex: 1 } }, [
-                            React.createElement(Text, { key: 'name', style: { color: '#fff', fontSize: 18, fontWeight: 'bold' } }, selectedChannel.name),
-                            selectedChannel.parentName && React.createElement(Text, { key: 'cat', style: { color: '#b5bac1', fontSize: 12 } }, `in ${selectedChannel.parentName}`)
+                            React.createElement(Text, { key: 'n', style: { color: '#fff', fontSize: 16, fontWeight: 'bold' } }, selectedChannel.name),
+                            selectedChannel.parentName && React.createElement(Text, { key: 'c', style: { color: '#b5bac1', fontSize: 11 } }, `in ${selectedChannel.parentName}`)
                         ])
                     ])
                 ]),
-
-                // Refresh & Copy ID buttons
                 React.createElement(View, { key: 'btns', style: { flexDirection: 'row', margin: 8, marginTop: 0 } }, [
-                    React.createElement(TouchableOpacity, { key: 'refresh', style: { flex: 1, padding: 10, backgroundColor: '#3f4147', borderRadius: 8, marginRight: 4, alignItems: 'center' }, onPress: refreshSelectedChannel },
-                        React.createElement(Text, { style: { color: '#fff', fontSize: 12 } }, "🔄 Refresh")),
-                    React.createElement(TouchableOpacity, { key: 'copy', style: { flex: 1, padding: 10, backgroundColor: '#3f4147', borderRadius: 8, marginLeft: 4, alignItems: 'center' }, onPress: () => { if (Clipboard?.setString) { Clipboard.setString(selectedChannel.id); showToast("📋 ID copied", getAssetIDByName("Check")); } } },
-                        React.createElement(Text, { style: { color: '#b5bac1', fontSize: 10 } }, `📋 ${selectedChannel.id}`))
+                    React.createElement(TouchableOpacity, { key: 'ref', style: { flex: 1, padding: 8, backgroundColor: '#3f4147', borderRadius: 6, marginRight: 4, alignItems: 'center' }, onPress: refreshSelectedChannel },
+                        React.createElement(Text, { style: { color: '#fff', fontSize: 11 } }, "🔄 Refresh")),
+                    React.createElement(TouchableOpacity, { key: 'cpy', style: { flex: 1, padding: 8, backgroundColor: '#3f4147', borderRadius: 6, marginLeft: 4, alignItems: 'center' }, onPress: () => { if (Clipboard?.setString) { Clipboard.setString(selectedChannel.id); showToast("📋 ID copied", getAssetIDByName("Check")); } } },
+                        React.createElement(Text, { style: { color: '#b5bac1', fontSize: 9 } }, `📋 ${selectedChannel.id.slice(-8)}`))
                 ]),
-
-                // Stats
-                React.createElement(Text, { key: 'stats', style: { color: '#5865F2', fontSize: 12, textAlign: 'center', marginVertical: 8 } },
-                    `🏷️ ${selectedChannel.permissions.overwrites.filter(o => o.type === 'role').length} Roles • 👤 ${selectedChannel.permissions.overwrites.filter(o => o.type === 'user').length} Individual Users`),
-
-                // Permission overwrites
-                React.createElement(Text, { key: 'perms-title', style: { color: '#fff', fontSize: 14, fontWeight: 'bold', marginLeft: 12, marginTop: 8 } }, "🔐 Permission Overwrites"),
-
+                React.createElement(Text, { key: 'stats', style: { color: '#5865F2', fontSize: 11, textAlign: 'center', marginVertical: 6 } },
+                    `🏷️ ${selectedChannel.permissions.overwrites.filter(o => o.type === 'role').length} Roles • 👤 ${selectedChannel.permissions.overwrites.filter(o => o.type === 'user').length} Users`),
                 ...selectedChannel.permissions.overwrites.map((ow, i) =>
-                    React.createElement(View, { key: `ow-${i}`, style: { margin: 8, marginTop: 6, padding: 12, backgroundColor: '#2b2d31', borderRadius: 12, borderLeftWidth: 3, borderLeftColor: ow.type === 'role' ? (ow.color || '#5865F2') : '#43b581' } }, [
-                        // Overwrite header
-                        React.createElement(View, { key: 'hdr', style: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 } }, [
-                            React.createElement(Text, { key: 'type', style: { fontSize: 14, marginRight: 8 } }, ow.type === 'role' ? '🏷️' : '👤'),
-                            React.createElement(View, { key: 'name-wrap', style: { flex: 1 } }, [
-                                React.createElement(Text, { key: 'name', style: { color: ow.type === 'role' ? roleColor(ow.color) : '#43b581', fontSize: 14, fontWeight: 'bold' } }, ow.name),
-                                ow.isUnknown && React.createElement(Text, { key: 'id', style: { color: '#949ba4', fontSize: 10 } }, `ID: ${ow.id}`)
+                    React.createElement(View, { key: `ow-${i}`, style: { margin: 6, padding: 10, backgroundColor: '#2b2d31', borderRadius: 10, borderLeftWidth: 3, borderLeftColor: ow.type === 'role' ? (ow.color || '#5865F2') : '#43b581' } }, [
+                        React.createElement(View, { key: 'hdr', style: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 } }, [
+                            React.createElement(Text, { key: 't', style: { fontSize: 12, marginRight: 6 } }, ow.type === 'role' ? '🏷️' : '👤'),
+                            React.createElement(View, { key: 'nw', style: { flex: 1 } }, [
+                                React.createElement(Text, { key: 'n', style: { color: ow.type === 'role' ? roleColor(ow.color) : '#43b581', fontSize: 13, fontWeight: 'bold' } }, ow.name),
+                                ow.isUnknown && React.createElement(Text, { key: 'id', style: { color: '#949ba4', fontSize: 9 } }, `ID: ${ow.id}`)
                             ]),
-                            React.createElement(View, { key: 'badge', style: { backgroundColor: ow.type === 'role' ? '#5865F2' : '#43b581', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4 } },
-                                React.createElement(Text, { style: { color: '#fff', fontSize: 9, fontWeight: 'bold' } }, ow.type === 'role' ? 'ROLE' : 'USER'))
+                            React.createElement(View, { key: 'b', style: { backgroundColor: ow.type === 'role' ? '#5865F2' : '#43b581', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 } },
+                                React.createElement(Text, { style: { color: '#fff', fontSize: 8, fontWeight: 'bold' } }, ow.type === 'role' ? 'ROLE' : 'USER'))
                         ]),
-
-                        // Allowed permissions
-                        ow.allowed.length > 0 && React.createElement(View, { key: 'allowed', style: { marginTop: 4 } }, [
-                            React.createElement(Text, { key: 'title', style: { color: '#43b581', fontSize: 11, fontWeight: 'bold', marginBottom: 4 } }, `✅ ALLOWED (${ow.allowed.length}):`),
-                            React.createElement(View, { key: 'perms', style: { flexDirection: 'row', flexWrap: 'wrap' } },
-                                ow.allowed.map((p, pi) =>
-                                    React.createElement(Text, { key: `a${pi}`, style: { color: '#43b581', fontSize: 10, backgroundColor: 'rgba(67,181,129,0.15)', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4, marginRight: 4, marginBottom: 4 } }, p)))
+                        ow.allowed.length > 0 && React.createElement(View, { key: 'a', style: { marginTop: 4 } }, [
+                            React.createElement(Text, { key: 't', style: { color: '#43b581', fontSize: 10, fontWeight: 'bold', marginBottom: 2 } }, `✅ (${ow.allowed.length}):`),
+                            React.createElement(View, { key: 'p', style: { flexDirection: 'row', flexWrap: 'wrap' } },
+                                ow.allowed.map((p, pi) => React.createElement(Text, { key: `a${pi}`, style: { color: '#43b581', fontSize: 9, backgroundColor: 'rgba(67,181,129,0.15)', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 3, marginRight: 3, marginBottom: 3 } }, p)))
                         ]),
-
-                        // Denied permissions
-                        ow.denied.length > 0 && React.createElement(View, { key: 'denied', style: { marginTop: 6 } }, [
-                            React.createElement(Text, { key: 'title', style: { color: '#ed4245', fontSize: 11, fontWeight: 'bold', marginBottom: 4 } }, `❌ DENIED (${ow.denied.length}):`),
-                            React.createElement(View, { key: 'perms', style: { flexDirection: 'row', flexWrap: 'wrap' } },
-                                ow.denied.map((p, pi) =>
-                                    React.createElement(Text, { key: `d${pi}`, style: { color: '#ed4245', fontSize: 10, backgroundColor: 'rgba(237,66,69,0.15)', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4, marginRight: 4, marginBottom: 4 } }, p)))
+                        ow.denied.length > 0 && React.createElement(View, { key: 'd', style: { marginTop: 4 } }, [
+                            React.createElement(Text, { key: 't', style: { color: '#ed4245', fontSize: 10, fontWeight: 'bold', marginBottom: 2 } }, `❌ (${ow.denied.length}):`),
+                            React.createElement(View, { key: 'p', style: { flexDirection: 'row', flexWrap: 'wrap' } },
+                                ow.denied.map((p, pi) => React.createElement(Text, { key: `d${pi}`, style: { color: '#ed4245', fontSize: 9, backgroundColor: 'rgba(237,66,69,0.15)', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 3, marginRight: 3, marginBottom: 3 } }, p)))
                         ]),
-
-                        ow.allowed.length === 0 && ow.denied.length === 0 && React.createElement(Text, { key: 'none', style: { color: '#949ba4', fontSize: 11, fontStyle: 'italic' } }, "No specific permissions")
+                        ow.allowed.length === 0 && ow.denied.length === 0 && React.createElement(Text, { key: 'no', style: { color: '#949ba4', fontSize: 10, fontStyle: 'italic' } }, "No specific perms")
                     ])
-                ),
-
-                selectedChannel.permissions.overwrites.length === 0 && React.createElement(View, { key: 'no-perms', style: { padding: 20, alignItems: 'center' } },
-                    React.createElement(Text, { style: { color: '#949ba4', fontSize: 12 } }, "No permission overwrites"))
+                )
             ]
         ],
 
-        // === SEARCH TAB ===
-        activeTab === 'search' && [
-            React.createElement(FormSection, { key: 'auto', title: "💬 MESSAGES" }, [
-                React.createElement(FormRow, { key: 'a1', label: "📋 Auto-detect", subLabel: clipboardMonitorActive ? "✅ Copy User ID to search" : "❌" })
+        // === USER LOOKUP TAB ===
+        activeTab === 'user' && [
+            React.createElement(View, { key: 'input-box', style: { margin: 10, padding: 12, backgroundColor: '#2b2d31', borderRadius: 10 } }, [
+                React.createElement(Text, { key: 'lbl', style: { color: '#fff', fontSize: 12, fontWeight: 'bold', marginBottom: 6 } }, "👤 User ID Lookup"),
+                React.createElement(View, { key: 'row', style: { flexDirection: 'row', alignItems: 'center' } }, [
+                    React.createElement(TextInput, {
+                        key: 'input',
+                        style: { flex: 1, backgroundColor: '#1e1f22', color: '#fff', padding: 10, borderRadius: 6, fontSize: 13 },
+                        placeholder: "Enter or paste User ID",
+                        placeholderTextColor: '#72767d',
+                        value: lookupUserId,
+                        onChangeText: setLookupUserId
+                    }),
+                    React.createElement(TouchableOpacity, { key: 'paste', style: { marginLeft: 6, padding: 10, backgroundColor: '#3f4147', borderRadius: 6 }, onPress: () => pasteFromClipboard(setLookupUserId) },
+                        React.createElement(Text, { style: { color: '#fff', fontSize: 12 } }, "📋"))
+                ]),
+                React.createElement(TouchableOpacity, { key: 'btn', style: { marginTop: 10, padding: 12, backgroundColor: '#5865F2', borderRadius: 8, alignItems: 'center' }, onPress: handleUserLookup },
+                    React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold' } }, isLookingUp ? "⏳ Looking up..." : "🔍 Find Hidden Channels"))
             ]),
-            React.createElement(FormSection, { key: 'man', title: "🔍 SEARCH" }, [
-                React.createElement(FormInput, { key: 'in', title: "User ID", value: userId, onChangeText: setUserId, keyboardType: "numeric" }),
-                React.createElement(FormRow, { key: 'btn', label: isSearchingUser ? "⏳..." : "🔍 Find", onPress: handleUserSearch })
+
+            lookupUserInfo && React.createElement(View, { key: 'user-info', style: { margin: 10, marginTop: 0, padding: 10, backgroundColor: '#2b2d31', borderRadius: 10 } }, [
+                React.createElement(Text, { key: 'name', style: { color: '#fff', fontSize: 14, fontWeight: 'bold' } },
+                    lookupUserInfo.member?.nick || lookupUserInfo.user?.globalName || lookupUserInfo.user?.username || `User ${lookupUserInfo.id.slice(-6)}`),
+                React.createElement(Text, { key: 'id', style: { color: '#949ba4', fontSize: 10 } }, `ID: ${lookupUserInfo.id}`),
+                lookupUserInfo.member?.roles && React.createElement(Text, { key: 'roles', style: { color: '#5865F2', fontSize: 10, marginTop: 4 } },
+                    `🏷️ ${lookupUserInfo.member.roles.length} roles in this server`)
+            ]),
+
+            userAccessChannels.length > 0 && React.createElement(Text, { key: 'title', style: { color: '#43b581', fontSize: 12, fontWeight: 'bold', marginLeft: 10, marginTop: 6 } },
+                `✅ Can access ${userAccessChannels.length} hidden channels:`),
+
+            ...userAccessChannels.map((ch, i) => React.createElement(ChannelCard, { key: `uc${i}`, ch, onPress: () => { setSelectedChannel(ch); setActiveTab('perms'); } })),
+
+            lookupUserInfo && userAccessChannels.length === 0 && React.createElement(View, { key: 'no-access', style: { padding: 20, alignItems: 'center' } }, [
+                React.createElement(Text, { key: 'e1', style: { fontSize: 30 } }, "🚫"),
+                React.createElement(Text, { key: 'e2', style: { color: '#fff', fontSize: 13, marginTop: 6 } }, "No hidden channel access"),
+                React.createElement(Text, { key: 'e3', style: { color: '#b5bac1', fontSize: 11, marginTop: 2 } }, "This user can't see any hidden channels")
+            ])
+        ],
+
+        // === MESSAGE SEARCH TAB ===
+        activeTab === 'search' && [
+            React.createElement(View, { key: 'auto-info', style: { margin: 10, padding: 12, backgroundColor: '#2b2d31', borderRadius: 10 } }, [
+                React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 12, fontWeight: 'bold' } }, "💬 Message Search"),
+                React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, marginTop: 4 } },
+                    clipboardMonitorActive ? "✅ Auto-detect: Copy any User ID to auto-search!" : "❌ Auto-detect inactive")
+            ]),
+
+            React.createElement(View, { key: 'search-box', style: { margin: 10, marginTop: 0, padding: 12, backgroundColor: '#2b2d31', borderRadius: 10 } }, [
+                React.createElement(Text, { key: 'lbl', style: { color: '#fff', fontSize: 12, fontWeight: 'bold', marginBottom: 6 } }, "🔍 Manual Search"),
+                React.createElement(View, { key: 'row', style: { flexDirection: 'row', alignItems: 'center' } }, [
+                    React.createElement(TextInput, {
+                        key: 'input',
+                        style: { flex: 1, backgroundColor: '#1e1f22', color: '#fff', padding: 10, borderRadius: 6, fontSize: 13 },
+                        placeholder: "Enter or paste User ID",
+                        placeholderTextColor: '#72767d',
+                        value: searchUserId,
+                        onChangeText: setSearchUserId
+                    }),
+                    React.createElement(TouchableOpacity, { key: 'paste', style: { marginLeft: 6, padding: 10, backgroundColor: '#3f4147', borderRadius: 6 }, onPress: () => pasteFromClipboard(setSearchUserId) },
+                        React.createElement(Text, { style: { color: '#fff', fontSize: 12 } }, "📋"))
+                ]),
+                React.createElement(TouchableOpacity, { key: 'btn', style: { marginTop: 10, padding: 12, backgroundColor: '#5865F2', borderRadius: 8, alignItems: 'center' }, onPress: handleMessageSearch },
+                    React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold' } }, isSearching ? "⏳ Searching..." : "🔍 Find Recent Messages")),
+                React.createElement(Text, { key: 'note', style: { color: '#949ba4', fontSize: 9, marginTop: 8, textAlign: 'center' } },
+                    "Searches mutual servers for their most recent message")
             ])
         ]
     ]);
@@ -531,23 +554,19 @@ function StalkerSettings() {
 export const settings = StalkerSettings;
 
 export const onLoad = () => {
-    logger.log("=== STALKER PRO v4.2 ===");
-
+    logger.log("=== STALKER PRO v4.3 ===");
     if (Permissions?.can) {
         patches.push(after("can", Permissions, ([permID, channel], res) => {
             if (channel?.realCheck) return res;
             if (permID === VIEW_CHANNEL) return true;
             return res;
         }));
-        logger.log("✅ Patched Permissions.can");
     }
-
     if (Clipboard?.getString) {
         clipboardMonitorActive = true;
         checkIntervalId = setInterval(checkClipboardContent, 2000);
     }
-
-    showToast("🔍 Stalker Pro v4.2", getAssetIDByName("Check"));
+    showToast("🔍 Stalker Pro v4.3", getAssetIDByName("Check"));
 };
 
 export const onUnload = () => {
