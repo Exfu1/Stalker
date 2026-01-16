@@ -1,5 +1,5 @@
 import { logger } from "@vendetta";
-import { findByStoreName, findByProps } from "@vendetta/metro";
+import { findByStoreName, findByProps, findByName, findByDisplayName } from "@vendetta/metro";
 import { React, ReactNative, FluxDispatcher, NavigationNative } from "@vendetta/metro/common";
 import { Forms, General } from "@vendetta/ui/components";
 import { getAssetIDByName } from "@vendetta/ui/assets";
@@ -19,10 +19,28 @@ const GuildMemberStore = findByStoreName("GuildMemberStore");
 const ChannelStore = findByStoreName("ChannelStore");
 const RelationshipStore = findByStoreName("RelationshipStore");
 
-// Find UserProfileSection for profile injection
-const UserProfileSection = findByProps("UserProfileSection")?.UserProfileSection ||
+// Try MANY different ways to find profile-related modules
+const UserProfileModule =
+    findByProps("UserProfileSection") ||
     findByProps("default", "UserProfileSection") ||
-    findByProps("UserProfileSection");
+    findByName("UserProfileSection") ||
+    findByDisplayName("UserProfileSection") ||
+    findByProps("UserProfile") ||
+    findByName("UserProfile") ||
+    findByDisplayName("UserProfile") ||
+    findByProps("ProfileBanner") ||
+    findByProps("UserProfileHeader") ||
+    findByName("UserProfileHeader") ||
+    findByProps("UserProfileBody") ||
+    null;
+
+// Try to find the specific section component
+const UserProfileSectionModule =
+    findByProps("UserProfileSection")?.UserProfileSection ||
+    findByName("UserProfileSection") ||
+    findByDisplayName("UserProfileSection") ||
+    findByProps("Section", "UserProfileSection")?.Section ||
+    null;
 
 // REST API for fetching messages
 const RestAPI = findByProps("getAPIBaseURL", "get") || findByProps("API_HOST", "get");
@@ -52,6 +70,9 @@ const RelationshipTypes = {
     PENDING_OUTGOING: 4,
     IMPLICIT: 5
 };
+
+// Profile injection status for debugging
+let profileInjectionStatus = "Not attempted";
 
 /**
  * Get relationship status with a user
@@ -295,7 +316,6 @@ async function quickSearchMessages(userId: string) {
         new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
     );
 
-    const recentCount = Math.min(allMessages.length, 50);
     showToast(`Found ${allMessages.length} messages!`, getAssetIDByName("Check"));
 
     // Show the most recent message details
@@ -547,9 +567,14 @@ function StalkerSettings() {
                         subLabel: UserStore ? "✅ Found" : "❌ Not Found"
                     }),
                     React.createElement(FormRow, {
-                        key: "profileSection",
+                        key: "profileModule",
+                        label: "Profile Module",
+                        subLabel: UserProfileModule ? "✅ Found" : "❌ Not Found"
+                    }),
+                    React.createElement(FormRow, {
+                        key: "profileInjection",
                         label: "Profile Injection",
-                        subLabel: UserProfileSection ? "✅ Available" : "❌ Not Available"
+                        subLabel: profileInjectionStatus
                     })
                 ]
             ),
@@ -588,90 +613,153 @@ function StalkerSettings() {
 export const settings = StalkerSettings;
 
 export const onLoad = () => {
-    logger.log("Stalker Pro loading...");
-    logger.log("RelationshipStore found:", !!RelationshipStore);
-    logger.log("UserProfileSection found:", !!UserProfileSection);
+    logger.log("=== Stalker Pro Loading ===");
+    logger.log("RelationshipStore:", !!RelationshipStore);
+    logger.log("UserProfileModule:", !!UserProfileModule);
+    logger.log("UserProfileSectionModule:", !!UserProfileSectionModule);
 
-    // Inject into user profile sections
-    try {
-        const profileModule = findByProps("UserProfileSection") ||
-            findByProps("default", "UserProfileSection");
+    // Log what we found
+    if (UserProfileModule) {
+        logger.log("UserProfileModule keys:", Object.keys(UserProfileModule));
+    }
 
-        if (profileModule?.default || profileModule?.UserProfileSection) {
-            const target = profileModule.default ? "default" : "UserProfileSection";
+    // Try to patch profile module
+    let patchSuccess = false;
 
-            const unpatch = after(target, profileModule, (args: any[], res: any) => {
-                try {
-                    // Get userId from props
-                    const userId = args[0]?.userId;
-                    if (!userId) return res;
-
-                    // Don't show for current user
-                    const currentUser = UserStore?.getCurrentUser?.();
-                    if (currentUser && userId === currentUser.id) return res;
-
-                    // Check if we can inject
-                    if (!res?.props?.children || !Array.isArray(res.props.children)) {
-                        return res;
-                    }
-
-                    // Get relationship and mutual guilds
-                    const rel = getRelationship(userId);
-                    const mutualGuilds = getMutualGuilds(userId);
-                    const userInfo = getUserInfo(userId);
-
-                    // Create Stalker Pro section
-                    const stalkerSection = React.createElement(
-                        FormSection,
-                        { key: "stalker-pro", title: "🔍 Stalker Pro" },
-                        [
-                            // Relationship status row
-                            rel && React.createElement(FormRow, {
-                                key: "relationship",
-                                label: `${rel.emoji} ${rel.label}`,
-                                subLabel: rel.isFriend ? "You are friends" : "Not friends"
-                            }),
-                            React.createElement(FormDivider, { key: "div1" }),
-                            // Recent messages button
-                            React.createElement(FormRow, {
-                                key: "recent",
-                                label: "🔎 Find Recent Messages",
-                                subLabel: `Search across ${mutualGuilds.length} mutual servers`,
-                                trailing: FormRow.Arrow ? React.createElement(FormRow.Arrow, null) : null,
-                                onPress: () => quickSearchMessages(userId)
-                            }),
-                            React.createElement(FormDivider, { key: "div2" }),
-                            // Mutual servers info
-                            React.createElement(FormRow, {
-                                key: "servers",
-                                label: `🏠 ${mutualGuilds.length} Mutual Servers`,
-                                subLabel: mutualGuilds.slice(0, 3).map((g: any) => g.name).join(", ") +
-                                    (mutualGuilds.length > 3 ? "..." : "")
-                            })
-                        ]
-                    );
-
-                    // Inject the section
-                    res.props.children.push(stalkerSection);
-
-                } catch (e) {
-                    logger.error("Error injecting profile section:", e);
-                }
-
-                return res;
-            });
-
+    // Method 1: Try patching UserProfileSection.default
+    if (UserProfileModule?.default) {
+        try {
+            const unpatch = after("default", UserProfileModule, patchProfileSection);
             patches.push(unpatch);
-            logger.log("Profile section injection enabled!");
-        } else {
-            logger.warn("UserProfileSection not found - profile injection disabled");
+            patchSuccess = true;
+            profileInjectionStatus = "✅ Patched (default)";
+            logger.log("Profile patch applied via default!");
+        } catch (e) {
+            logger.error("Failed to patch default:", e);
         }
-    } catch (e) {
-        logger.error("Failed to setup profile injection:", e);
+    }
+
+    // Method 2: Try patching UserProfileSection directly
+    if (!patchSuccess && UserProfileModule?.UserProfileSection) {
+        try {
+            const unpatch = after("UserProfileSection", UserProfileModule, patchProfileSection);
+            patches.push(unpatch);
+            patchSuccess = true;
+            profileInjectionStatus = "✅ Patched (UserProfileSection)";
+            logger.log("Profile patch applied via UserProfileSection!");
+        } catch (e) {
+            logger.error("Failed to patch UserProfileSection:", e);
+        }
+    }
+
+    // Method 3: Try findByName result
+    if (!patchSuccess) {
+        const ByName = findByName("UserProfileSection", false);
+        if (ByName?.default) {
+            try {
+                const unpatch = after("default", ByName, patchProfileSection);
+                patches.push(unpatch);
+                patchSuccess = true;
+                profileInjectionStatus = "✅ Patched (findByName)";
+                logger.log("Profile patch applied via findByName!");
+            } catch (e) {
+                logger.error("Failed to patch findByName result:", e);
+            }
+        }
+    }
+
+    // Method 4: Try UserProfile (different component name)
+    if (!patchSuccess) {
+        const UserProfile = findByName("UserProfile", false) ||
+            findByDisplayName("UserProfile") ||
+            findByProps("UserProfile")?.UserProfile;
+        if (UserProfile) {
+            try {
+                const target = UserProfile.default ? "default" : "UserProfile";
+                const module = UserProfile.default ? UserProfile : { UserProfile };
+                const unpatch = after(target, module, patchProfileSection);
+                patches.push(unpatch);
+                patchSuccess = true;
+                profileInjectionStatus = "✅ Patched (UserProfile)";
+                logger.log("Profile patch applied via UserProfile!");
+            } catch (e) {
+                logger.error("Failed to patch UserProfile:", e);
+            }
+        }
+    }
+
+    if (!patchSuccess) {
+        profileInjectionStatus = "❌ No compatible module found";
+        logger.warn("Could not find profile module to patch");
     }
 
     showToast("Stalker Pro ready!", getAssetIDByName("Check"));
 };
+
+function patchProfileSection(args: any[], res: any) {
+    try {
+        // Get userId from props
+        const userId = args[0]?.userId || args[0]?.user?.id;
+        if (!userId) return res;
+
+        // Don't show for current user
+        const currentUser = UserStore?.getCurrentUser?.();
+        if (currentUser && userId === currentUser.id) return res;
+
+        // Check if we can inject
+        if (!res?.props?.children) {
+            return res;
+        }
+
+        // Make sure children is an array
+        if (!Array.isArray(res.props.children)) {
+            res.props.children = [res.props.children];
+        }
+
+        // Get relationship and mutual guilds
+        const rel = getRelationship(userId);
+        const mutualGuilds = getMutualGuilds(userId);
+
+        // Create Stalker Pro section
+        const stalkerSection = React.createElement(
+            FormSection,
+            { key: "stalker-pro", title: "🔍 Stalker Pro" },
+            [
+                // Relationship status row
+                rel && React.createElement(FormRow, {
+                    key: "relationship",
+                    label: `${rel.emoji} ${rel.label}`,
+                    subLabel: rel.isFriend ? "You are friends" : "Not friends"
+                }),
+                React.createElement(FormDivider, { key: "div1" }),
+                // Recent messages button
+                React.createElement(FormRow, {
+                    key: "recent",
+                    label: "🔎 Find Recent Messages",
+                    subLabel: `Search across ${mutualGuilds.length} mutual servers`,
+                    trailing: FormRow.Arrow ? React.createElement(FormRow.Arrow, null) : null,
+                    onPress: () => quickSearchMessages(userId)
+                }),
+                React.createElement(FormDivider, { key: "div2" }),
+                // Mutual servers info
+                React.createElement(FormRow, {
+                    key: "servers",
+                    label: `🏠 ${mutualGuilds.length} Mutual Servers`,
+                    subLabel: mutualGuilds.slice(0, 3).map((g: any) => g.name).join(", ") +
+                        (mutualGuilds.length > 3 ? "..." : "")
+                })
+            ]
+        );
+
+        // Inject the section
+        res.props.children.push(stalkerSection);
+
+    } catch (e) {
+        logger.error("Error injecting profile section:", e);
+    }
+
+    return res;
+}
 
 export const onUnload = () => {
     logger.log("Stalker Pro unloading...");
