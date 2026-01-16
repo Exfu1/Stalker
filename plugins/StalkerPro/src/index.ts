@@ -15,6 +15,7 @@ const GuildMemberStore = findByStoreName("GuildMemberStore");
 const ChannelStore = findByStoreName("ChannelStore");
 const SelectedGuildStore = findByStoreName("SelectedGuildStore");
 const PermissionStore = findByStoreName("PermissionStore");
+const GuildChannelStore = findByStoreName("GuildChannelStore");
 
 // Clipboard
 const Clipboard = ReactNative?.Clipboard || findByProps("setString", "getString");
@@ -22,11 +23,8 @@ const Clipboard = ReactNative?.Clipboard || findByProps("setString", "getString"
 // REST API
 const RestAPI = findByProps("getAPIBaseURL", "get") || findByProps("API_HOST", "get");
 
-// Permission constants (using numbers for ES2017 compatibility)
-const Permissions = findByProps("VIEW_CHANNEL", "SEND_MESSAGES") || {
-    VIEW_CHANNEL: 1024,
-    SEND_MESSAGES: 2048
-};
+// Permission constants
+const VIEW_CHANNEL = 1024;
 
 // Storage
 let clipboardMonitorActive = false;
@@ -41,100 +39,115 @@ interface HiddenChannel {
     id: string;
     name: string;
     type: number;
-    parentId: string | null;
     parentName: string;
-    usersWithAccess: any[];
     rolesWithAccess: any[];
 }
 
 function getChannelTypeName(type: number): string {
     switch (type) {
-        case 0: return "💬";  // Text
-        case 2: return "🔊";  // Voice
-        case 4: return "📁";  // Category
-        case 5: return "📢";  // Announcement
-        case 13: return "🎭"; // Stage
-        case 15: return "📋"; // Forum
+        case 0: return "💬";
+        case 2: return "🔊";
+        case 4: return "📁";
+        case 5: return "📢";
+        case 13: return "🎭";
+        case 15: return "📋";
         default: return "📝";
     }
 }
 
-function canUserViewChannel(channelId: string): boolean {
-    try {
-        if (!PermissionStore) return true;
-        const can = PermissionStore.can?.(Permissions.VIEW_CHANNEL, { id: channelId });
-        return can !== false;
-    } catch {
-        return true;
-    }
-}
-
+// Get hidden channels using GuildChannelStore which knows about ALL channels
 function getHiddenChannels(guildId: string): HiddenChannel[] {
+    const hidden: HiddenChannel[] = [];
+
     try {
-        if (!ChannelStore || !GuildStore) return [];
+        logger.log("=== SCANNING FOR HIDDEN CHANNELS ===");
+        logger.log("Guild ID:", guildId);
 
-        // Get all channels for this guild
-        const allChannels = Object.values(ChannelStore.getMutableGuildChannelsForGuild?.(guildId) ||
-            ChannelStore.getMutableGuildChannels?.() || {})
-            .filter((c: any) => c.guild_id === guildId);
+        // Method 1: Try GuildChannelStore.getChannels which includes hidden ones
+        let allChannels: any[] = [];
 
-        const hiddenChannels: HiddenChannel[] = [];
+        if (GuildChannelStore?.getChannels) {
+            const channelData = GuildChannelStore.getChannels(guildId);
+            logger.log("GuildChannelStore.getChannels result:", JSON.stringify(Object.keys(channelData || {})));
 
-        for (const channel of allChannels as any[]) {
-            if (!channel) continue;
+            // It returns an object with different channel categories
+            if (channelData) {
+                // GUILD_TEXT, GUILD_VOICE, etc. or just arrays
+                for (const key of Object.keys(channelData)) {
+                    const channels = channelData[key];
+                    if (Array.isArray(channels)) {
+                        // Each item might be {channel: {...}, comparator: ...}
+                        for (const item of channels) {
+                            const ch = item?.channel || item;
+                            if (ch && ch.id) allChannels.push(ch);
+                        }
+                    }
+                }
+            }
+        }
 
-            // Skip DMs and threads
-            if (channel.type === 1 || channel.type === 3 || channel.type === 11 || channel.type === 12) continue;
+        // Method 2: Also try ChannelStore methods
+        if (allChannels.length === 0) {
+            const storeChannels = ChannelStore?.getGuildChannelsVersion?.(guildId) ||
+                ChannelStore?.getMutableGuildChannels?.() ||
+                {};
+            allChannels = Object.values(storeChannels).filter((c: any) => c?.guild_id === guildId);
+        }
 
-            // Check if current user can't see this channel
-            const canSee = canUserViewChannel(channel.id);
+        logger.log("Total channels found:", allChannels.length);
 
-            if (!canSee) {
-                const accessInfo = getChannelAccessInfo(channel, guildId);
+        // Method 3: Check each channel for VIEW_CHANNEL permission
+        for (const channel of allChannels) {
+            if (!channel || !channel.id) continue;
+            if (channel.type === 4) continue; // Skip categories
+            if (channel.type === 11 || channel.type === 12) continue; // Skip threads
 
-                hiddenChannels.push({
+            // Check if we can view this channel
+            let canView = true;
+
+            if (PermissionStore?.can) {
+                try {
+                    canView = PermissionStore.can(VIEW_CHANNEL, channel);
+                } catch { }
+            }
+
+            if (!canView) {
+                // Get roles that CAN see it
+                const roles = getChannelRoles(channel, guildId);
+
+                hidden.push({
                     id: channel.id,
-                    name: channel.name || "Unknown",
-                    type: channel.type,
-                    parentId: channel.parent_id,
-                    parentName: channel.parent_id ? (ChannelStore.getChannel?.(channel.parent_id)?.name || "") : "",
-                    usersWithAccess: accessInfo.users,
-                    rolesWithAccess: accessInfo.roles
+                    name: channel.name || "unknown",
+                    type: channel.type || 0,
+                    parentName: channel.parent_id ?
+                        (ChannelStore?.getChannel?.(channel.parent_id)?.name || "") : "",
+                    rolesWithAccess: roles
                 });
             }
         }
 
-        return hiddenChannels.sort((a, b) => a.name.localeCompare(b.name));
+        logger.log("Hidden channels found:", hidden.length);
+
     } catch (e) {
-        logger.error("Error getting hidden channels:", e);
-        return [];
+        logger.error("Error scanning channels:", e);
     }
+
+    return hidden.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function getChannelAccessInfo(channel: any, guildId: string): { users: any[], roles: any[] } {
-    const users: any[] = [];
+function getChannelRoles(channel: any, guildId: string): any[] {
     const roles: any[] = [];
-
     try {
-        const overwrites = channel.permissionOverwrites || channel.permission_overwrites || {};
+        const overwrites = channel.permissionOverwrites || {};
         const guild = GuildStore?.getGuild?.(guildId);
 
-        for (const [id, overwrite] of Object.entries(overwrites) as any[]) {
-            if (!overwrite) continue;
+        for (const [id, ow] of Object.entries(overwrites) as any[]) {
+            if (!ow) continue;
+            const allow = Number(ow.allow || 0);
 
-            const allow = Number(overwrite.allow || 0);
-
-            if ((allow & Number(Permissions.VIEW_CHANNEL)) !== 0) {
-                if (overwrite.type === 1 || overwrite.type === "member") {
-                    const user = UserStore?.getUser?.(id);
-                    if (user) {
-                        users.push({
-                            id: user.id,
-                            username: user.username,
-                            globalName: user.globalName
-                        });
-                    }
-                } else if (overwrite.type === 0 || overwrite.type === "role") {
+            // Check if VIEW_CHANNEL is allowed
+            if ((allow & VIEW_CHANNEL) !== 0) {
+                if (ow.type === 0 || ow.type === "role") {
                     const role = guild?.roles?.[id];
                     if (role && role.name !== "@everyone") {
                         roles.push({
@@ -146,32 +159,23 @@ function getChannelAccessInfo(channel: any, guildId: string): { users: any[], ro
                 }
             }
         }
-    } catch (e) {
-        logger.error("Error getting access info:", e);
-    }
-
-    return { users, roles };
+    } catch { }
+    return roles;
 }
 
-function getUserHiddenChannelAccess(guildId: string, userId: string): HiddenChannel[] {
-    try {
-        const allHidden = getHiddenChannels(guildId);
-        const member = GuildMemberStore?.getMember?.(guildId, userId);
+function getUserHiddenAccess(guildId: string, userId: string): HiddenChannel[] {
+    const allHidden = getHiddenChannels(guildId);
+    const member = GuildMemberStore?.getMember?.(guildId, userId);
 
-        return allHidden.filter(channel => {
-            if (channel.usersWithAccess.some((u: any) => u.id === userId)) return true;
-            if (member?.roles) {
-                return channel.rolesWithAccess.some((r: any) => member.roles.includes(r.id));
-            }
-            return false;
-        });
-    } catch {
-        return [];
-    }
+    if (!member?.roles) return [];
+
+    return allHidden.filter(ch =>
+        ch.rolesWithAccess.some(r => member.roles.includes(r.id))
+    );
 }
 
 // ========================================
-// MESSAGE SEARCH FUNCTIONS
+// MESSAGE SEARCH - ENSURE MOST RECENT
 // ========================================
 
 function getMutualGuilds(userId: string) {
@@ -182,18 +186,34 @@ function getMutualGuilds(userId: string) {
     } catch { return []; }
 }
 
+// Search with explicit sorting for most recent
 async function searchMessagesInGuild(guildId: string, authorId: string): Promise<any[]> {
     if (!RestAPI?.get) return [];
     try {
         const res = await RestAPI.get({
             url: `/guilds/${guildId}/messages/search`,
-            query: { author_id: authorId, include_nsfw: true }
+            query: {
+                author_id: authorId,
+                include_nsfw: true,
+                sort_by: "timestamp",    // Sort by timestamp
+                sort_order: "desc"       // Descending = newest first
+            }
         });
-        return (res?.body?.messages || []).map((m: any[]) => ({
-            id: m[0].id, content: m[0].content || "[No text]",
-            channelId: m[0].channel_id, guildId, timestamp: m[0].timestamp
+
+        const messages = (res?.body?.messages || []).map((m: any[]) => ({
+            id: m[0].id,
+            content: m[0].content || "[No text]",
+            channelId: m[0].channel_id,
+            guildId,
+            timestamp: m[0].timestamp
         }));
-    } catch { return []; }
+
+        logger.log(`Found ${messages.length} messages in guild ${guildId}`);
+        return messages;
+    } catch (e) {
+        logger.error("Search error:", e);
+        return [];
+    }
 }
 
 function getChannelName(id: string) { return ChannelStore?.getChannel(id)?.name || "unknown"; }
@@ -225,6 +245,7 @@ async function autoSearchUser(userId: string) {
 
     let allMsgs: any[] = [];
 
+    // Search up to 8 servers
     for (let i = 0; i < Math.min(guilds.length, 8); i++) {
         try {
             const msgs = await searchMessagesInGuild(guilds[i].id, userId);
@@ -233,7 +254,17 @@ async function autoSearchUser(userId: string) {
         if (i < guilds.length - 1) await new Promise(r => setTimeout(r, 250));
     }
 
-    allMsgs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    // Sort ALL messages by timestamp (newest first) to get the absolute most recent
+    allMsgs.sort((a, b) => {
+        const dateA = new Date(a.timestamp).getTime();
+        const dateB = new Date(b.timestamp).getTime();
+        return dateB - dateA; // Descending order
+    });
+
+    logger.log(`Total messages across all servers: ${allMsgs.length}`);
+    if (allMsgs.length > 0) {
+        logger.log(`Most recent message timestamp: ${allMsgs[0].timestamp}`);
+    }
 
     if (allMsgs.length === 0) {
         showToast(`📭 No messages found`, getAssetIDByName("Small"));
@@ -242,20 +273,34 @@ async function autoSearchUser(userId: string) {
 
     showToast(`✅ Found ${allMsgs.length} messages!`, getAssetIDByName("Check"));
 
+    // allMsgs[0] is now guaranteed to be the most recent
     const latest = allMsgs[0];
     const channelName = getChannelName(latest.channelId);
     const guildName = getGuildName(latest.guildId);
     const messageLink = `https://discord.com/channels/${latest.guildId}/${latest.channelId}/${latest.id}`;
 
     setTimeout(() => {
-        showToast(`📍 #${channelName} in ${guildName}`, getAssetIDByName("ic_message"));
+        // Show when the message was sent
+        const msgDate = new Date(latest.timestamp);
+        const now = new Date();
+        const diffMs = now.getTime() - msgDate.getTime();
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMins / 60);
+        const diffDays = Math.floor(diffHours / 24);
+
+        let timeAgo = "";
+        if (diffMins < 60) timeAgo = `${diffMins}m ago`;
+        else if (diffHours < 24) timeAgo = `${diffHours}h ago`;
+        else timeAgo = `${diffDays}d ago`;
+
+        showToast(`📍 #${channelName} (${timeAgo})`, getAssetIDByName("ic_message"));
     }, 1500);
 
     setTimeout(async () => {
         try {
             if (Clipboard?.setString) {
                 Clipboard.setString(messageLink);
-                showToast(`📋 Link copied!`, getAssetIDByName("Check"));
+                showToast(`📋 Link copied to ${guildName}!`, getAssetIDByName("Check"));
             }
         } catch (e) {
             logger.error("Copy failed:", e);
@@ -271,61 +316,68 @@ async function checkClipboardContent() {
 
         if (content && content !== lastCheckedClipboard && isUserIdFormat(content)) {
             lastCheckedClipboard = content;
-            const userId = content.trim();
             showToast(`🎯 User ID detected!`, getAssetIDByName("Check"));
-            setTimeout(() => autoSearchUser(userId), 1000);
+            setTimeout(() => autoSearchUser(content.trim()), 1000);
         }
-    } catch (e) {
-        logger.error("Clipboard error:", e);
-    }
+    } catch { }
 }
 
 // ========================================
-// SETTINGS WITH TABBED DASHBOARD
+// SETTINGS DASHBOARD
 // ========================================
 
 function StalkerSettings() {
-    // Tab state
-    const [activeTab, setActiveTab] = React.useState<'search' | 'hidden' | 'user'>('hidden');
-
-    // Message search state
-    const [userId, setUserId] = React.useState("");
-    const [isSearchingUser, setIsSearchingUser] = React.useState(false);
+    const [activeTab, setActiveTab] = React.useState<'hidden' | 'user' | 'search'>('hidden');
 
     // Hidden channels state
     const [hiddenChannels, setHiddenChannels] = React.useState<HiddenChannel[]>([]);
     const [isScanning, setIsScanning] = React.useState(false);
     const [selectedGuild, setSelectedGuild] = React.useState<any>(null);
     const [expandedChannel, setExpandedChannel] = React.useState<string | null>(null);
+    const [scanLog, setScanLog] = React.useState("");
 
     // User lookup state
     const [lookupUserId, setLookupUserId] = React.useState("");
     const [userChannels, setUserChannels] = React.useState<HiddenChannel[]>([]);
-    const [lookupUserInfo, setLookupUserInfo] = React.useState<any>(null);
 
-    // Scan current guild on mount
+    // Message search state
+    const [userId, setUserId] = React.useState("");
+    const [isSearchingUser, setIsSearchingUser] = React.useState(false);
+
     React.useEffect(() => {
         scanCurrentGuild();
     }, []);
 
     const scanCurrentGuild = () => {
         setIsScanning(true);
+        setScanLog("Scanning...");
         try {
             const guildId = SelectedGuildStore?.getGuildId?.();
+            logger.log("Current guild ID:", guildId);
+
             if (guildId) {
                 const guild = GuildStore?.getGuild?.(guildId);
                 setSelectedGuild(guild);
+
                 const channels = getHiddenChannels(guildId);
                 setHiddenChannels(channels);
+
+                setScanLog(`Found ${channels.length} hidden channels`);
+
                 if (channels.length > 0) {
-                    showToast(`🔒 Found ${channels.length} hidden channels`, getAssetIDByName("Check"));
+                    showToast(`🔒 Found ${channels.length} hidden!`, getAssetIDByName("Check"));
+                } else {
+                    showToast(`✨ No hidden channels`, getAssetIDByName("Check"));
                 }
             } else {
                 setSelectedGuild(null);
                 setHiddenChannels([]);
+                setScanLog("No server selected - open a server first!");
+                showToast("Open a server first!", getAssetIDByName("Small"));
             }
         } catch (e) {
             logger.error("Scan error:", e);
+            setScanLog(`Error: ${e}`);
         } finally {
             setIsScanning(false);
         }
@@ -353,275 +405,150 @@ function StalkerSettings() {
             return;
         }
 
-        const channels = getUserHiddenChannelAccess(guildId, lookupUserId);
+        const channels = getUserHiddenAccess(guildId, lookupUserId);
         setUserChannels(channels);
 
         const user = UserStore?.getUser?.(lookupUserId);
-        setLookupUserInfo(user);
-
-        const name = user?.globalName || user?.username || lookupUserId;
+        const name = user?.globalName || user?.username || "User";
         showToast(`${name}: ${channels.length} hidden channels`, getAssetIDByName("Check"));
     };
 
     const roleColor = (color: number) => color ? `#${color.toString(16).padStart(6, '0')}` : '#99AAB5';
 
-    // Tab button component
-    const TabButton = ({ id, label, icon }: { id: string, label: string, icon: string }) =>
-        React.createElement(
-            TouchableOpacity,
-            {
-                style: {
-                    flex: 1,
-                    padding: 10,
-                    backgroundColor: activeTab === id ? '#5865F2' : '#2b2d31',
-                    borderRadius: 8,
-                    marginHorizontal: 2
-                },
-                onPress: () => setActiveTab(id as any)
+    const TabBtn = ({ id, label, icon }: any) =>
+        React.createElement(TouchableOpacity, {
+            style: {
+                flex: 1,
+                padding: 10,
+                backgroundColor: activeTab === id ? '#5865F2' : '#2b2d31',
+                borderRadius: 8,
+                marginHorizontal: 2
             },
-            React.createElement(Text, {
-                style: {
-                    color: '#fff',
-                    textAlign: 'center',
-                    fontSize: 12,
-                    fontWeight: activeTab === id ? 'bold' : 'normal'
-                }
-            }, `${icon} ${label}`)
-        );
+            onPress: () => setActiveTab(id)
+        }, React.createElement(Text, {
+            style: { color: '#fff', textAlign: 'center', fontSize: 12, fontWeight: activeTab === id ? 'bold' : 'normal' }
+        }, `${icon} ${label}`));
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         // Header
-        React.createElement(View, {
-            key: 'header',
-            style: { padding: 16, backgroundColor: '#2b2d31', marginBottom: 8 }
-        }, [
-            React.createElement(Text, {
-                key: 'title',
-                style: { color: '#fff', fontSize: 20, fontWeight: 'bold', textAlign: 'center' }
-            }, "🔍 Stalker Pro v3.0"),
-            React.createElement(Text, {
-                key: 'subtitle',
-                style: { color: '#b5bac1', fontSize: 12, textAlign: 'center', marginTop: 4 }
-            }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server for hidden channels")
+        React.createElement(View, { key: 'hdr', style: { padding: 16, backgroundColor: '#2b2d31', marginBottom: 8 } }, [
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 20, fontWeight: 'bold', textAlign: 'center' } },
+                "🔍 Stalker Pro v3.1"),
+            React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 12, textAlign: 'center', marginTop: 4 } },
+                selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server to scan")
         ]),
 
-        // Tab Buttons
-        React.createElement(View, {
-            key: 'tabs',
-            style: { flexDirection: 'row', padding: 8, marginBottom: 8 }
-        }, [
-            React.createElement(TabButton, { key: 't1', id: 'hidden', label: 'Hidden', icon: '🔒' }),
-            React.createElement(TabButton, { key: 't2', id: 'user', label: 'User Access', icon: '👤' }),
-            React.createElement(TabButton, { key: 't3', id: 'search', label: 'Messages', icon: '💬' })
+        // Tabs
+        React.createElement(View, { key: 'tabs', style: { flexDirection: 'row', padding: 8, marginBottom: 8 } }, [
+            React.createElement(TabBtn, { key: '1', id: 'hidden', label: 'Hidden', icon: '🔒' }),
+            React.createElement(TabBtn, { key: '2', id: 'user', label: 'User', icon: '👤' }),
+            React.createElement(TabBtn, { key: '3', id: 'search', label: 'Messages', icon: '💬' })
         ]),
 
-        // ========== HIDDEN CHANNELS TAB ==========
+        // === HIDDEN TAB ===
         activeTab === 'hidden' && [
-            // Scan button
-            React.createElement(
-                TouchableOpacity,
-                {
-                    key: 'scan-btn',
-                    style: {
-                        margin: 12,
-                        padding: 14,
-                        backgroundColor: '#5865F2',
-                        borderRadius: 12,
-                        flexDirection: 'row',
-                        justifyContent: 'center',
-                        alignItems: 'center'
-                    },
-                    onPress: scanCurrentGuild
-                },
-                React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold', fontSize: 16 } },
-                    isScanning ? "⏳ Scanning..." : "🔄 Scan Current Server")
+            React.createElement(TouchableOpacity, {
+                key: 'scan',
+                style: { margin: 12, padding: 14, backgroundColor: '#5865F2', borderRadius: 12, alignItems: 'center' },
+                onPress: scanCurrentGuild
+            }, React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold', fontSize: 16 } },
+                isScanning ? "⏳ Scanning..." : "🔄 Scan Current Server")),
+
+            React.createElement(Text, { key: 'log', style: { color: '#b5bac1', textAlign: 'center', marginBottom: 12, fontSize: 13 } },
+                scanLog),
+
+            // Debug info
+            React.createElement(Text, { key: 'debug', style: { color: '#949ba4', textAlign: 'center', fontSize: 10, marginBottom: 8 } },
+                `GuildChannelStore: ${GuildChannelStore ? '✅' : '❌'} | PermissionStore: ${PermissionStore ? '✅' : '❌'}`),
+
+            ...hiddenChannels.map((ch, i) =>
+                React.createElement(TouchableOpacity, {
+                    key: `c${i}`,
+                    style: { margin: 8, marginTop: 4, padding: 14, backgroundColor: '#2b2d31', borderRadius: 12, borderLeftWidth: 4, borderLeftColor: '#5865F2' },
+                    onPress: () => setExpandedChannel(expandedChannel === ch.id ? null : ch.id)
+                }, [
+                    React.createElement(View, { key: 'h', style: { flexDirection: 'row', alignItems: 'center' } }, [
+                        React.createElement(Text, { key: 'i', style: { fontSize: 18, marginRight: 10 } }, getChannelTypeName(ch.type)),
+                        React.createElement(View, { key: 'n', style: { flex: 1 } }, [
+                            React.createElement(Text, { key: 'nm', style: { color: '#fff', fontSize: 16, fontWeight: 'bold' } }, ch.name),
+                            ch.parentName && React.createElement(Text, { key: 'p', style: { color: '#949ba4', fontSize: 12 } }, `in ${ch.parentName}`)
+                        ]),
+                        React.createElement(Text, { key: 'a', style: { color: '#b5bac1' } }, expandedChannel === ch.id ? "▼" : "▶")
+                    ]),
+                    React.createElement(Text, { key: 'r', style: { color: '#00b894', fontSize: 12, marginTop: 6 } },
+                        `👥 ${ch.rolesWithAccess.length} roles with access`),
+
+                    expandedChannel === ch.id && React.createElement(View, { key: 'd', style: { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#3f4147' } },
+                        ch.rolesWithAccess.length > 0
+                            ? ch.rolesWithAccess.map((r: any, ri: number) =>
+                                React.createElement(Text, { key: `r${ri}`, style: { color: roleColor(r.color), marginLeft: 12, marginTop: 2, fontSize: 14 } }, `• ${r.name}`)
+                            )
+                            : [React.createElement(Text, { key: 'no', style: { color: '#949ba4', marginLeft: 12 } }, "No specific role overwrites found")]
+                    )
+                ])
             ),
 
-            // Results count
-            React.createElement(Text, {
-                key: 'count',
-                style: { color: '#b5bac1', textAlign: 'center', marginBottom: 12, fontSize: 14 }
-            }, hiddenChannels.length > 0
-                ? `Found ${hiddenChannels.length} hidden channels`
-                : selectedGuild ? "No hidden channels found ✨" : "Open a server to scan"),
-
-            // Channel list
-            ...hiddenChannels.map((channel, idx) =>
-                React.createElement(
-                    TouchableOpacity,
-                    {
-                        key: `ch-${idx}`,
-                        style: {
-                            margin: 8,
-                            marginTop: 4,
-                            padding: 14,
-                            backgroundColor: '#2b2d31',
-                            borderRadius: 12,
-                            borderLeftWidth: 4,
-                            borderLeftColor: '#5865F2'
-                        },
-                        onPress: () => setExpandedChannel(expandedChannel === channel.id ? null : channel.id)
-                    },
-                    [
-                        // Channel header
-                        React.createElement(View, { key: 'hdr', style: { flexDirection: 'row', alignItems: 'center' } }, [
-                            React.createElement(Text, { key: 'icon', style: { fontSize: 18, marginRight: 10 } },
-                                getChannelTypeName(channel.type)),
-                            React.createElement(View, { key: 'info', style: { flex: 1 } }, [
-                                React.createElement(Text, { key: 'name', style: { color: '#fff', fontSize: 16, fontWeight: 'bold' } },
-                                    channel.name),
-                                channel.parentName && React.createElement(Text, { key: 'parent', style: { color: '#949ba4', fontSize: 12 } },
-                                    `in ${channel.parentName}`)
-                            ]),
-                            React.createElement(Text, { key: 'arrow', style: { color: '#b5bac1' } },
-                                expandedChannel === channel.id ? "▼" : "▶")
-                        ]),
-
-                        // Access summary
-                        React.createElement(Text, {
-                            key: 'access',
-                            style: { color: '#00b894', fontSize: 12, marginTop: 6 }
-                        }, `👥 ${channel.rolesWithAccess.length} roles, ${channel.usersWithAccess.length} users`),
-
-                        // Expanded details
-                        expandedChannel === channel.id && React.createElement(View, {
-                            key: 'details',
-                            style: { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#3f4147' }
-                        }, [
-                            // Roles
-                            channel.rolesWithAccess.length > 0 && React.createElement(Text, {
-                                key: 'roles-title',
-                                style: { color: '#fff', fontWeight: 'bold', marginBottom: 6 }
-                            }, "🏷️ Roles:"),
-                            ...channel.rolesWithAccess.map((role: any, ri: number) =>
-                                React.createElement(Text, {
-                                    key: `role-${ri}`,
-                                    style: { color: roleColor(role.color), marginLeft: 12, marginTop: 2, fontSize: 14 }
-                                }, `• ${role.name}`)
-                            ),
-
-                            // Users
-                            channel.usersWithAccess.length > 0 && React.createElement(Text, {
-                                key: 'users-title',
-                                style: { color: '#fff', fontWeight: 'bold', marginTop: 10, marginBottom: 6 }
-                            }, "👤 Direct Access:"),
-                            ...channel.usersWithAccess.map((user: any, ui: number) =>
-                                React.createElement(Text, {
-                                    key: `user-${ui}`,
-                                    style: { color: '#b5bac1', marginLeft: 12, marginTop: 2, fontSize: 14 }
-                                }, `• ${user.globalName || user.username}`)
-                            )
-                        ])
-                    ]
-                )
-            )
+            hiddenChannels.length === 0 && !isScanning && React.createElement(View, { key: 'empty', style: { padding: 30, alignItems: 'center' } }, [
+                React.createElement(Text, { key: 'e1', style: { fontSize: 40 } }, "✨"),
+                React.createElement(Text, { key: 'e2', style: { color: '#fff', fontSize: 16, marginTop: 10 } },
+                    selectedGuild ? "No hidden channels found" : "Open a server first"),
+                React.createElement(Text, { key: 'e3', style: { color: '#b5bac1', marginTop: 4, textAlign: 'center', fontSize: 12 } },
+                    "Note: Discord may not expose\nchannels you can't see at all")
+            ])
         ],
 
-        // ========== USER LOOKUP TAB ==========
+        // === USER TAB ===
         activeTab === 'user' && [
-            React.createElement(FormSection, { key: 'user-section', title: "👤 USER LOOKUP" }, [
-                React.createElement(FormInput, {
-                    key: 'input',
-                    title: "User ID",
-                    placeholder: "Enter User ID to check their access",
-                    value: lookupUserId,
-                    onChangeText: setLookupUserId,
-                    keyboardType: "numeric"
-                }),
-                React.createElement(FormRow, {
-                    key: 'btn',
-                    label: "🔍 Check Access",
-                    subLabel: selectedGuild ? `In ${selectedGuild.name}` : "Open a server first",
-                    trailing: FormRow.Arrow ? React.createElement(FormRow.Arrow, null) : null,
-                    onPress: handleUserLookup
-                })
+            React.createElement(FormSection, { key: 'us', title: "👤 USER HIDDEN ACCESS" }, [
+                React.createElement(FormInput, { key: 'in', title: "User ID", placeholder: "Enter User ID", value: lookupUserId, onChangeText: setLookupUserId, keyboardType: "numeric" }),
+                React.createElement(FormRow, { key: 'btn', label: "🔍 Check Hidden Access", subLabel: selectedGuild ? `In ${selectedGuild.name}` : "Open server first", onPress: handleUserLookup })
             ]),
 
-            // Results
-            userChannels.length > 0 && React.createElement(FormSection, {
-                key: 'results',
-                title: `✅ ${lookupUserInfo?.globalName || lookupUserInfo?.username || 'User'} has access to:`
-            }, userChannels.map((channel, idx) =>
-                React.createElement(FormRow, {
-                    key: `uc-${idx}`,
-                    label: `${getChannelTypeName(channel.type)} ${channel.name}`,
-                    subLabel: channel.parentName ? `in ${channel.parentName}` : undefined
-                })
-            )),
+            userChannels.length > 0 && React.createElement(FormSection, { key: 'res', title: `✅ Can access ${userChannels.length} hidden channels:` },
+                userChannels.map((ch, i) => React.createElement(FormRow, { key: `uc${i}`, label: `${getChannelTypeName(ch.type)} ${ch.name}`, subLabel: ch.parentName || undefined }))
+            ),
 
-            userChannels.length === 0 && lookupUserId.length >= 17 && React.createElement(
-                View,
-                { key: 'no-access', style: { padding: 30, alignItems: 'center' } },
-                [
-                    React.createElement(Text, { key: 't1', style: { fontSize: 40 } }, "🚫"),
-                    React.createElement(Text, { key: 't2', style: { color: '#fff', fontSize: 16, marginTop: 10 } },
-                        "No hidden channel access"),
-                    React.createElement(Text, { key: 't3', style: { color: '#b5bac1', marginTop: 4, textAlign: 'center' } },
-                        "This user can't see any channels you can't see")
-                ]
-            )
+            userChannels.length === 0 && lookupUserId.length >= 17 && React.createElement(View, { key: 'no', style: { padding: 30, alignItems: 'center' } }, [
+                React.createElement(Text, { key: 'n1', style: { fontSize: 40 } }, "🚫"),
+                React.createElement(Text, { key: 'n2', style: { color: '#fff', fontSize: 16, marginTop: 10 } }, "No hidden access found")
+            ])
         ],
 
-        // ========== MESSAGE SEARCH TAB ==========
+        // === SEARCH TAB ===
         activeTab === 'search' && [
-            React.createElement(FormSection, { key: 'search-info', title: "💬 MESSAGE SEARCH" }, [
-                React.createElement(FormRow, {
-                    key: 'auto',
-                    label: "📋 Auto-Detection",
-                    subLabel: clipboardMonitorActive
-                        ? "✅ Copy any User ID to auto-search!"
-                        : "❌ Clipboard monitoring inactive"
-                })
+            React.createElement(FormSection, { key: 'auto', title: "💬 MESSAGE SEARCH" }, [
+                React.createElement(FormRow, { key: 'a1', label: "📋 Auto-Detection", subLabel: clipboardMonitorActive ? "✅ Copy User ID to auto-search!" : "❌ Inactive" }),
+                React.createElement(FormRow, { key: 'a2', label: "⏱️ Returns Most Recent", subLabel: "Messages sorted by timestamp (newest first)" })
             ]),
-            React.createElement(FormSection, { key: 'manual', title: "🔍 MANUAL SEARCH" }, [
-                React.createElement(FormInput, {
-                    key: 'input',
-                    title: "User ID",
-                    placeholder: "Enter Discord User ID",
-                    value: userId,
-                    onChangeText: setUserId,
-                    keyboardType: "numeric"
-                }),
-                React.createElement(FormRow, {
-                    key: 'btn',
-                    label: isSearchingUser ? "⏳ Searching..." : "🔍 Search Messages",
-                    subLabel: "Find their recent messages across servers",
-                    onPress: isSearchingUser ? undefined : handleUserSearch
-                })
+            React.createElement(FormSection, { key: 'man', title: "🔍 MANUAL SEARCH" }, [
+                React.createElement(FormInput, { key: 'in', title: "User ID", placeholder: "Enter Discord User ID", value: userId, onChangeText: setUserId, keyboardType: "numeric" }),
+                React.createElement(FormRow, { key: 'btn', label: isSearchingUser ? "⏳ Searching..." : "🔍 Find Recent Messages", onPress: isSearchingUser ? undefined : handleUserSearch })
             ])
         ],
 
         // Footer
-        React.createElement(View, {
-            key: 'footer',
-            style: { padding: 20, alignItems: 'center' }
-        }, [
-            React.createElement(Text, {
-                key: 'tip',
-                style: { color: '#949ba4', fontSize: 11, textAlign: 'center' }
-            }, "💡 Tip: Copy any User ID and it auto-searches!\n🔒 Open a server and tap Scan to find hidden channels")
-        ])
+        React.createElement(View, { key: 'ft', style: { padding: 20, alignItems: 'center' } },
+            React.createElement(Text, { style: { color: '#949ba4', fontSize: 10, textAlign: 'center' } },
+                "💡 Copy User ID → auto-search\n🔒 Open server → Scan for hidden channels"))
     ]);
 }
 
 export const settings = StalkerSettings;
 
 export const onLoad = () => {
-    logger.log("=== STALKER PRO v3.0 LOADING ===");
+    logger.log("=== STALKER PRO v3.1 LOADING ===");
+    logger.log("GuildChannelStore:", !!GuildChannelStore);
+    logger.log("PermissionStore:", !!PermissionStore);
 
-    // Start clipboard monitoring
     if (Clipboard?.getString) {
         clipboardMonitorActive = true;
         checkIntervalId = setInterval(checkClipboardContent, 2000);
-        logger.log("Clipboard monitoring started");
     }
 
-    showToast("🔍 Stalker Pro v3.0 ready!", getAssetIDByName("Check"));
+    showToast("🔍 Stalker Pro v3.1 ready!", getAssetIDByName("Check"));
 };
 
 export const onUnload = () => {
-    logger.log("=== STALKER PRO UNLOADING ===");
-
     if (checkIntervalId) {
         clearInterval(checkIntervalId);
         checkIntervalId = null;
