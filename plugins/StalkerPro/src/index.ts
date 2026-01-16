@@ -5,11 +5,8 @@ import { Forms, General } from "@vendetta/ui/components";
 import { getAssetIDByName } from "@vendetta/ui/assets";
 import { showToast } from "@vendetta/ui/toasts";
 
-const { FormSection, FormRow, FormInput, FormDivider } = Forms;
-const { ScrollView, View, Text, TouchableOpacity, ActivityIndicator, Modal, Dimensions } = General;
-
-// Get screen dimensions
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions?.get?.("window") || { width: 400, height: 800 };
+const { FormSection, FormRow, FormInput, FormDivider, FormSwitchRow } = Forms;
+const { ScrollView, View, Text, TouchableOpacity, ActivityIndicator } = General;
 
 // Discord stores
 const UserStore = findByStoreName("UserStore");
@@ -24,7 +21,6 @@ const Clipboard = ReactNative?.Clipboard || findByProps("setString", "getString"
 
 // REST API
 const RestAPI = findByProps("getAPIBaseURL", "get") || findByProps("API_HOST", "get");
-const MessageActions = findByProps("jumpToMessage");
 
 // Permission constants (using numbers for ES2017 compatibility)
 const Permissions = findByProps("VIEW_CHANNEL", "SEND_MESSAGES") || {
@@ -33,11 +29,9 @@ const Permissions = findByProps("VIEW_CHANNEL", "SEND_MESSAGES") || {
 };
 
 // Storage
-let targetUserId: string = "";
 let clipboardMonitorActive = false;
 let lastCheckedClipboard = "";
 let checkIntervalId: any = null;
-let floatingButtonRef: any = null;
 
 // ========================================
 // HIDDEN CHANNEL DETECTION LOGIC
@@ -49,21 +43,8 @@ interface HiddenChannel {
     type: number;
     parentId: string | null;
     parentName: string;
-    usersWithAccess: UserAccess[];
-    rolesWithAccess: RoleAccess[];
-}
-
-interface UserAccess {
-    id: string;
-    username: string;
-    globalName: string | null;
-}
-
-interface RoleAccess {
-    id: string;
-    name: string;
-    color: number;
-    memberCount: number;
+    usersWithAccess: any[];
+    rolesWithAccess: any[];
 }
 
 function getChannelTypeName(type: number): string {
@@ -78,19 +59,9 @@ function getChannelTypeName(type: number): string {
     }
 }
 
-function canUserViewChannel(channelId: string, userId?: string): boolean {
+function canUserViewChannel(channelId: string): boolean {
     try {
         if (!PermissionStore) return true;
-
-        if (userId) {
-            // Check for specific user
-            const perms = PermissionStore.getChannelPermissions?.({ id: channelId }, { id: userId });
-            if (perms !== undefined) {
-                return (Number(perms) & Number(Permissions.VIEW_CHANNEL)) !== 0;
-            }
-        }
-
-        // Check for current user
         const can = PermissionStore.can?.(Permissions.VIEW_CHANNEL, { id: channelId });
         return can !== false;
     } catch {
@@ -102,14 +73,15 @@ function getHiddenChannels(guildId: string): HiddenChannel[] {
     try {
         if (!ChannelStore || !GuildStore) return [];
 
-        const allChannels = ChannelStore.getChannels?.(guildId) ||
-            Object.values(ChannelStore.getMutableGuildChannels?.() || {}).filter((c: any) => c.guild_id === guildId);
+        // Get all channels for this guild
+        const allChannels = Object.values(ChannelStore.getMutableGuildChannelsForGuild?.(guildId) ||
+            ChannelStore.getMutableGuildChannels?.() || {})
+            .filter((c: any) => c.guild_id === guildId);
 
         const hiddenChannels: HiddenChannel[] = [];
-        const currentUser = UserStore?.getCurrentUser?.();
 
         for (const channel of allChannels as any[]) {
-            if (!channel || channel.guild_id !== guildId) continue;
+            if (!channel) continue;
 
             // Skip DMs and threads
             if (channel.type === 1 || channel.type === 3 || channel.type === 11 || channel.type === 12) continue;
@@ -118,7 +90,6 @@ function getHiddenChannels(guildId: string): HiddenChannel[] {
             const canSee = canUserViewChannel(channel.id);
 
             if (!canSee) {
-                // Get users/roles who CAN see it
                 const accessInfo = getChannelAccessInfo(channel, guildId);
 
                 hiddenChannels.push({
@@ -126,7 +97,7 @@ function getHiddenChannels(guildId: string): HiddenChannel[] {
                     name: channel.name || "Unknown",
                     type: channel.type,
                     parentId: channel.parent_id,
-                    parentName: channel.parent_id ? (ChannelStore.getChannel?.(channel.parent_id)?.name || "Unknown") : "",
+                    parentName: channel.parent_id ? (ChannelStore.getChannel?.(channel.parent_id)?.name || "") : "",
                     usersWithAccess: accessInfo.users,
                     rolesWithAccess: accessInfo.roles
                 });
@@ -140,12 +111,11 @@ function getHiddenChannels(guildId: string): HiddenChannel[] {
     }
 }
 
-function getChannelAccessInfo(channel: any, guildId: string): { users: UserAccess[], roles: RoleAccess[] } {
-    const users: UserAccess[] = [];
-    const roles: RoleAccess[] = [];
+function getChannelAccessInfo(channel: any, guildId: string): { users: any[], roles: any[] } {
+    const users: any[] = [];
+    const roles: any[] = [];
 
     try {
-        // Check permission overwrites
         const overwrites = channel.permissionOverwrites || channel.permission_overwrites || {};
         const guild = GuildStore?.getGuild?.(guildId);
 
@@ -153,12 +123,9 @@ function getChannelAccessInfo(channel: any, guildId: string): { users: UserAcces
             if (!overwrite) continue;
 
             const allow = Number(overwrite.allow || 0);
-            const deny = Number(overwrite.deny || 0);
 
-            // Check if VIEW_CHANNEL is allowed
             if ((allow & Number(Permissions.VIEW_CHANNEL)) !== 0) {
                 if (overwrite.type === 1 || overwrite.type === "member") {
-                    // User overwrite
                     const user = UserStore?.getUser?.(id);
                     if (user) {
                         users.push({
@@ -168,15 +135,12 @@ function getChannelAccessInfo(channel: any, guildId: string): { users: UserAcces
                         });
                     }
                 } else if (overwrite.type === 0 || overwrite.type === "role") {
-                    // Role overwrite
                     const role = guild?.roles?.[id];
                     if (role && role.name !== "@everyone") {
-                        const memberCount = countMembersWithRole(guildId, id);
                         roles.push({
                             id: role.id,
                             name: role.name,
-                            color: role.color || 0,
-                            memberCount
+                            color: role.color || 0
                         });
                     }
                 }
@@ -189,31 +153,16 @@ function getChannelAccessInfo(channel: any, guildId: string): { users: UserAcces
     return { users, roles };
 }
 
-function countMembersWithRole(guildId: string, roleId: string): number {
-    try {
-        if (!GuildMemberStore) return 0;
-        const members = GuildMemberStore.getMembers?.(guildId) || [];
-        return members.filter((m: any) => m.roles?.includes(roleId)).length;
-    } catch {
-        return 0;
-    }
-}
-
 function getUserHiddenChannelAccess(guildId: string, userId: string): HiddenChannel[] {
     try {
         const allHidden = getHiddenChannels(guildId);
+        const member = GuildMemberStore?.getMember?.(guildId, userId);
 
-        // Filter to channels this user has access to
         return allHidden.filter(channel => {
-            // Check if user is in the users list
-            if (channel.usersWithAccess.some(u => u.id === userId)) return true;
-
-            // Check if user has any of the roles
-            const member = GuildMemberStore?.getMember?.(guildId, userId);
+            if (channel.usersWithAccess.some((u: any) => u.id === userId)) return true;
             if (member?.roles) {
-                return channel.rolesWithAccess.some(r => member.roles.includes(r.id));
+                return channel.rolesWithAccess.some((r: any) => member.roles.includes(r.id));
             }
-
             return false;
         });
     } catch {
@@ -222,466 +171,7 @@ function getUserHiddenChannelAccess(guildId: string, userId: string): HiddenChan
 }
 
 // ========================================
-// FLOATING ACTION BUTTON COMPONENT
-// ========================================
-
-function FloatingButton({ onPress }: { onPress: () => void }) {
-    const [position, setPosition] = React.useState({ x: SCREEN_WIDTH - 70, y: SCREEN_HEIGHT / 2 });
-
-    return React.createElement(
-        TouchableOpacity,
-        {
-            style: {
-                position: 'absolute',
-                left: position.x,
-                top: position.y,
-                width: 56,
-                height: 56,
-                borderRadius: 28,
-                backgroundColor: '#5865F2',
-                justifyContent: 'center',
-                alignItems: 'center',
-                elevation: 8,
-                shadowColor: '#000',
-                shadowOffset: { width: 0, height: 4 },
-                shadowOpacity: 0.3,
-                shadowRadius: 8,
-                zIndex: 9999,
-            },
-            onPress,
-            activeOpacity: 0.8
-        },
-        React.createElement(Text, {
-            style: { fontSize: 24, color: '#fff' }
-        }, "🔒")
-    );
-}
-
-// ========================================
-// HIDDEN CHANNELS DASHBOARD MODAL
-// ========================================
-
-function HiddenChannelsDashboard({ visible, onClose }: { visible: boolean, onClose: () => void }) {
-    const [activeTab, setActiveTab] = React.useState<'channels' | 'users'>('channels');
-    const [hiddenChannels, setHiddenChannels] = React.useState<HiddenChannel[]>([]);
-    const [isLoading, setIsLoading] = React.useState(false);
-    const [selectedGuild, setSelectedGuild] = React.useState<any>(null);
-    const [userIdInput, setUserIdInput] = React.useState("");
-    const [userChannels, setUserChannels] = React.useState<HiddenChannel[]>([]);
-    const [expandedChannel, setExpandedChannel] = React.useState<string | null>(null);
-
-    React.useEffect(() => {
-        if (visible) {
-            scanCurrentGuild();
-        }
-    }, [visible]);
-
-    const scanCurrentGuild = () => {
-        setIsLoading(true);
-        try {
-            const guildId = SelectedGuildStore?.getGuildId?.();
-            if (guildId) {
-                const guild = GuildStore?.getGuild?.(guildId);
-                setSelectedGuild(guild);
-                const channels = getHiddenChannels(guildId);
-                setHiddenChannels(channels);
-                showToast(`Found ${channels.length} hidden channels`, getAssetIDByName("Check"));
-            } else {
-                showToast("Open a server first!", getAssetIDByName("Small"));
-            }
-        } catch (e) {
-            logger.error("Scan error:", e);
-            showToast("Scan failed", getAssetIDByName("Small"));
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-    const searchUserAccess = () => {
-        if (!userIdInput || userIdInput.length < 17) {
-            showToast("Enter valid User ID", getAssetIDByName("Small"));
-            return;
-        }
-
-        const guildId = SelectedGuildStore?.getGuildId?.();
-        if (!guildId) {
-            showToast("Open a server first!", getAssetIDByName("Small"));
-            return;
-        }
-
-        const channels = getUserHiddenChannelAccess(guildId, userIdInput);
-        setUserChannels(channels);
-
-        const user = UserStore?.getUser?.(userIdInput);
-        const name = user?.globalName || user?.username || userIdInput;
-        showToast(`${name} can see ${channels.length} hidden channels`, getAssetIDByName("Check"));
-    };
-
-    const roleColor = (color: number) => color ? `#${color.toString(16).padStart(6, '0')}` : '#99AAB5';
-
-    if (!visible) return null;
-
-    return React.createElement(
-        View,
-        {
-            style: {
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                right: 0,
-                bottom: 0,
-                backgroundColor: 'rgba(0,0,0,0.85)',
-                zIndex: 10000,
-            }
-        },
-        [
-            // Header
-            React.createElement(
-                View,
-                {
-                    key: 'header',
-                    style: {
-                        flexDirection: 'row',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        padding: 16,
-                        paddingTop: 50,
-                        backgroundColor: '#1e1f22',
-                        borderBottomWidth: 1,
-                        borderBottomColor: '#3f4147'
-                    }
-                },
-                [
-                    React.createElement(Text, {
-                        key: 'title',
-                        style: { color: '#fff', fontSize: 20, fontWeight: 'bold' }
-                    }, `🔒 ${selectedGuild?.name || 'Hidden Channels'}`),
-                    React.createElement(
-                        TouchableOpacity,
-                        { key: 'close', onPress: onClose, style: { padding: 8 } },
-                        React.createElement(Text, { style: { color: '#fff', fontSize: 24 } }, "✕")
-                    )
-                ]
-            ),
-
-            // Tab Buttons
-            React.createElement(
-                View,
-                {
-                    key: 'tabs',
-                    style: {
-                        flexDirection: 'row',
-                        backgroundColor: '#2b2d31',
-                        padding: 8
-                    }
-                },
-                [
-                    React.createElement(
-                        TouchableOpacity,
-                        {
-                            key: 'tab1',
-                            style: {
-                                flex: 1,
-                                padding: 12,
-                                backgroundColor: activeTab === 'channels' ? '#5865F2' : 'transparent',
-                                borderRadius: 8,
-                                marginRight: 4
-                            },
-                            onPress: () => setActiveTab('channels')
-                        },
-                        React.createElement(Text, {
-                            style: { color: '#fff', textAlign: 'center', fontWeight: activeTab === 'channels' ? 'bold' : 'normal' }
-                        }, "📋 Channels")
-                    ),
-                    React.createElement(
-                        TouchableOpacity,
-                        {
-                            key: 'tab2',
-                            style: {
-                                flex: 1,
-                                padding: 12,
-                                backgroundColor: activeTab === 'users' ? '#5865F2' : 'transparent',
-                                borderRadius: 8,
-                                marginLeft: 4
-                            },
-                            onPress: () => setActiveTab('users')
-                        },
-                        React.createElement(Text, {
-                            style: { color: '#fff', textAlign: 'center', fontWeight: activeTab === 'users' ? 'bold' : 'normal' }
-                        }, "👤 User Lookup")
-                    )
-                ]
-            ),
-
-            // Content
-            React.createElement(
-                ScrollView,
-                {
-                    key: 'content',
-                    style: { flex: 1, backgroundColor: '#1e1f22' }
-                },
-                activeTab === 'channels' ? [
-                    // Refresh button
-                    React.createElement(
-                        TouchableOpacity,
-                        {
-                            key: 'refresh',
-                            style: {
-                                margin: 12,
-                                padding: 12,
-                                backgroundColor: '#3f4147',
-                                borderRadius: 8,
-                                flexDirection: 'row',
-                                justifyContent: 'center',
-                                alignItems: 'center'
-                            },
-                            onPress: scanCurrentGuild
-                        },
-                        React.createElement(Text, { style: { color: '#fff' } },
-                            isLoading ? "⏳ Scanning..." : "🔄 Rescan Server")
-                    ),
-
-                    // Channel count
-                    React.createElement(Text, {
-                        key: 'count',
-                        style: { color: '#b5bac1', textAlign: 'center', marginBottom: 12 }
-                    }, `Found ${hiddenChannels.length} hidden channels`),
-
-                    // Channel list
-                    ...hiddenChannels.map((channel, idx) =>
-                        React.createElement(
-                            TouchableOpacity,
-                            {
-                                key: `ch-${idx}`,
-                                style: {
-                                    margin: 8,
-                                    marginTop: 4,
-                                    padding: 12,
-                                    backgroundColor: '#2b2d31',
-                                    borderRadius: 12,
-                                    borderLeftWidth: 4,
-                                    borderLeftColor: '#5865F2'
-                                },
-                                onPress: () => setExpandedChannel(expandedChannel === channel.id ? null : channel.id)
-                            },
-                            [
-                                // Channel name
-                                React.createElement(
-                                    View,
-                                    { key: 'header', style: { flexDirection: 'row', alignItems: 'center' } },
-                                    [
-                                        React.createElement(Text, {
-                                            key: 'icon',
-                                            style: { fontSize: 16, marginRight: 8 }
-                                        }, getChannelTypeName(channel.type)),
-                                        React.createElement(Text, {
-                                            key: 'name',
-                                            style: { color: '#fff', fontSize: 16, fontWeight: 'bold', flex: 1 }
-                                        }, channel.name),
-                                        React.createElement(Text, {
-                                            key: 'expand',
-                                            style: { color: '#b5bac1', fontSize: 12 }
-                                        }, expandedChannel === channel.id ? "▼" : "▶")
-                                    ]
-                                ),
-
-                                // Category
-                                channel.parentName && React.createElement(Text, {
-                                    key: 'parent',
-                                    style: { color: '#949ba4', fontSize: 12, marginTop: 4 }
-                                }, `📁 ${channel.parentName}`),
-
-                                // Access summary
-                                React.createElement(Text, {
-                                    key: 'access',
-                                    style: { color: '#00b894', fontSize: 12, marginTop: 4 }
-                                }, `👥 ${channel.rolesWithAccess.length} roles, ${channel.usersWithAccess.length} users`),
-
-                                // Expanded details
-                                expandedChannel === channel.id && React.createElement(
-                                    View,
-                                    { key: 'details', style: { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#3f4147' } },
-                                    [
-                                        // Roles
-                                        channel.rolesWithAccess.length > 0 && React.createElement(Text, {
-                                            key: 'roles-title',
-                                            style: { color: '#fff', fontWeight: 'bold', marginBottom: 4 }
-                                        }, "🏷️ Roles with access:"),
-                                        ...channel.rolesWithAccess.map((role, ri) =>
-                                            React.createElement(Text, {
-                                                key: `role-${ri}`,
-                                                style: { color: roleColor(role.color), marginLeft: 8, marginTop: 2 }
-                                            }, `• ${role.name} (${role.memberCount} members)`)
-                                        ),
-
-                                        // Users
-                                        channel.usersWithAccess.length > 0 && React.createElement(Text, {
-                                            key: 'users-title',
-                                            style: { color: '#fff', fontWeight: 'bold', marginTop: 8, marginBottom: 4 }
-                                        }, "👤 Users with direct access:"),
-                                        ...channel.usersWithAccess.map((user, ui) =>
-                                            React.createElement(Text, {
-                                                key: `user-${ui}`,
-                                                style: { color: '#b5bac1', marginLeft: 8, marginTop: 2 }
-                                            }, `• ${user.globalName || user.username}`)
-                                        )
-                                    ]
-                                )
-                            ]
-                        )
-                    ),
-
-                    // Empty state
-                    hiddenChannels.length === 0 && !isLoading && React.createElement(
-                        View,
-                        { key: 'empty', style: { padding: 40, alignItems: 'center' } },
-                        [
-                            React.createElement(Text, { key: 't1', style: { fontSize: 48 } }, "✨"),
-                            React.createElement(Text, { key: 't2', style: { color: '#fff', fontSize: 18, marginTop: 12 } }, "No hidden channels!"),
-                            React.createElement(Text, { key: 't3', style: { color: '#b5bac1', marginTop: 4, textAlign: 'center' } },
-                                "You can see all channels in this server, or open a different server.")
-                        ]
-                    )
-                ] : [
-                    // User Lookup Tab
-                    React.createElement(
-                        View,
-                        { key: 'search', style: { padding: 12 } },
-                        [
-                            React.createElement(Text, {
-                                key: 'label',
-                                style: { color: '#b5bac1', marginBottom: 8 }
-                            }, "Enter User ID to see their hidden channel access:"),
-                            React.createElement(
-                                View,
-                                { key: 'input-row', style: { flexDirection: 'row' } },
-                                [
-                                    React.createElement(
-                                        View,
-                                        {
-                                            key: 'input-wrap',
-                                            style: {
-                                                flex: 1,
-                                                backgroundColor: '#2b2d31',
-                                                borderRadius: 8,
-                                                marginRight: 8
-                                            }
-                                        },
-                                        React.createElement(FormInput, {
-                                            key: 'input',
-                                            placeholder: "User ID (17-19 digits)",
-                                            value: userIdInput,
-                                            onChangeText: setUserIdInput,
-                                            keyboardType: "numeric",
-                                            style: { color: '#fff' }
-                                        })
-                                    ),
-                                    React.createElement(
-                                        TouchableOpacity,
-                                        {
-                                            key: 'search-btn',
-                                            style: {
-                                                backgroundColor: '#5865F2',
-                                                borderRadius: 8,
-                                                padding: 12,
-                                                justifyContent: 'center'
-                                            },
-                                            onPress: searchUserAccess
-                                        },
-                                        React.createElement(Text, { style: { color: '#fff' } }, "🔍")
-                                    )
-                                ]
-                            )
-                        ]
-                    ),
-
-                    // User results
-                    userChannels.length > 0 && React.createElement(
-                        View,
-                        { key: 'results', style: { padding: 12 } },
-                        [
-                            React.createElement(Text, {
-                                key: 'result-title',
-                                style: { color: '#00b894', fontSize: 16, fontWeight: 'bold', marginBottom: 12 }
-                            }, `✅ Can access ${userChannels.length} hidden channels:`),
-                            ...userChannels.map((channel, idx) =>
-                                React.createElement(
-                                    View,
-                                    {
-                                        key: `uc-${idx}`,
-                                        style: {
-                                            backgroundColor: '#2b2d31',
-                                            padding: 12,
-                                            borderRadius: 8,
-                                            marginBottom: 8,
-                                            flexDirection: 'row',
-                                            alignItems: 'center'
-                                        }
-                                    },
-                                    [
-                                        React.createElement(Text, { key: 'icon', style: { fontSize: 16, marginRight: 8 } },
-                                            getChannelTypeName(channel.type)),
-                                        React.createElement(
-                                            View,
-                                            { key: 'info', style: { flex: 1 } },
-                                            [
-                                                React.createElement(Text, { key: 'name', style: { color: '#fff', fontWeight: 'bold' } },
-                                                    channel.name),
-                                                channel.parentName && React.createElement(Text, {
-                                                    key: 'parent', style: { color: '#949ba4', fontSize: 12 }
-                                                }, `in ${channel.parentName}`)
-                                            ]
-                                        )
-                                    ]
-                                )
-                            )
-                        ]
-                    ),
-
-                    // Empty state for user lookup
-                    userChannels.length === 0 && userIdInput.length >= 17 && React.createElement(
-                        View,
-                        { key: 'no-access', style: { padding: 40, alignItems: 'center' } },
-                        [
-                            React.createElement(Text, { key: 't1', style: { fontSize: 48 } }, "🚫"),
-                            React.createElement(Text, { key: 't2', style: { color: '#fff', fontSize: 16, marginTop: 12 } },
-                                "No hidden channel access"),
-                            React.createElement(Text, { key: 't3', style: { color: '#b5bac1', marginTop: 4 } },
-                                "This user can't see any channels you can't see")
-                        ]
-                    )
-                ]
-            )
-        ]
-    );
-}
-
-// ========================================
-// MAIN APP WRAPPER WITH FAB
-// ========================================
-
-function StalkerProOverlay() {
-    const [dashboardVisible, setDashboardVisible] = React.useState(false);
-
-    return React.createElement(
-        View,
-        { style: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'box-none' } },
-        [
-            React.createElement(FloatingButton, {
-                key: 'fab',
-                onPress: () => setDashboardVisible(true)
-            }),
-            React.createElement(HiddenChannelsDashboard, {
-                key: 'dashboard',
-                visible: dashboardVisible,
-                onClose: () => setDashboardVisible(false)
-            })
-        ]
-    );
-}
-
-// ========================================
-// ORIGINAL STALKER FUNCTIONALITY
+// MESSAGE SEARCH FUNCTIONS
 // ========================================
 
 function getMutualGuilds(userId: string) {
@@ -730,7 +220,7 @@ async function autoSearchUser(userId: string) {
         return;
     }
 
-    const displayName = userInfo?.globalName || userInfo?.username || `User ${userId.slice(-4)}`;
+    const displayName = userInfo?.globalName || userInfo?.username || `User`;
     showToast(`🔍 Searching ${displayName}...`, getAssetIDByName("ic_search"));
 
     let allMsgs: any[] = [];
@@ -790,39 +280,331 @@ async function checkClipboardContent() {
     }
 }
 
-// Settings (for manual search)
-function StalkerSettings() {
-    const [userId, setUserId] = React.useState(targetUserId);
-    const [isSearching, setIsSearching] = React.useState(false);
+// ========================================
+// SETTINGS WITH TABBED DASHBOARD
+// ========================================
 
-    const handleSearch = async () => {
-        if (!userId || userId.length < 17) { showToast("Invalid User ID", getAssetIDByName("Small")); return; }
-        setIsSearching(true);
-        targetUserId = userId;
-        await autoSearchUser(userId);
-        setIsSearching(false);
+function StalkerSettings() {
+    // Tab state
+    const [activeTab, setActiveTab] = React.useState<'search' | 'hidden' | 'user'>('hidden');
+
+    // Message search state
+    const [userId, setUserId] = React.useState("");
+    const [isSearchingUser, setIsSearchingUser] = React.useState(false);
+
+    // Hidden channels state
+    const [hiddenChannels, setHiddenChannels] = React.useState<HiddenChannel[]>([]);
+    const [isScanning, setIsScanning] = React.useState(false);
+    const [selectedGuild, setSelectedGuild] = React.useState<any>(null);
+    const [expandedChannel, setExpandedChannel] = React.useState<string | null>(null);
+
+    // User lookup state
+    const [lookupUserId, setLookupUserId] = React.useState("");
+    const [userChannels, setUserChannels] = React.useState<HiddenChannel[]>([]);
+    const [lookupUserInfo, setLookupUserInfo] = React.useState<any>(null);
+
+    // Scan current guild on mount
+    React.useEffect(() => {
+        scanCurrentGuild();
+    }, []);
+
+    const scanCurrentGuild = () => {
+        setIsScanning(true);
+        try {
+            const guildId = SelectedGuildStore?.getGuildId?.();
+            if (guildId) {
+                const guild = GuildStore?.getGuild?.(guildId);
+                setSelectedGuild(guild);
+                const channels = getHiddenChannels(guildId);
+                setHiddenChannels(channels);
+                if (channels.length > 0) {
+                    showToast(`🔒 Found ${channels.length} hidden channels`, getAssetIDByName("Check"));
+                }
+            } else {
+                setSelectedGuild(null);
+                setHiddenChannels([]);
+            }
+        } catch (e) {
+            logger.error("Scan error:", e);
+        } finally {
+            setIsScanning(false);
+        }
     };
 
+    const handleUserSearch = async () => {
+        if (!userId || userId.length < 17) {
+            showToast("Enter valid User ID", getAssetIDByName("Small"));
+            return;
+        }
+        setIsSearchingUser(true);
+        await autoSearchUser(userId);
+        setIsSearchingUser(false);
+    };
+
+    const handleUserLookup = () => {
+        if (!lookupUserId || lookupUserId.length < 17) {
+            showToast("Enter valid User ID", getAssetIDByName("Small"));
+            return;
+        }
+
+        const guildId = SelectedGuildStore?.getGuildId?.();
+        if (!guildId) {
+            showToast("Open a server first!", getAssetIDByName("Small"));
+            return;
+        }
+
+        const channels = getUserHiddenChannelAccess(guildId, lookupUserId);
+        setUserChannels(channels);
+
+        const user = UserStore?.getUser?.(lookupUserId);
+        setLookupUserInfo(user);
+
+        const name = user?.globalName || user?.username || lookupUserId;
+        showToast(`${name}: ${channels.length} hidden channels`, getAssetIDByName("Check"));
+    };
+
+    const roleColor = (color: number) => color ? `#${color.toString(16).padStart(6, '0')}` : '#99AAB5';
+
+    // Tab button component
+    const TabButton = ({ id, label, icon }: { id: string, label: string, icon: string }) =>
+        React.createElement(
+            TouchableOpacity,
+            {
+                style: {
+                    flex: 1,
+                    padding: 10,
+                    backgroundColor: activeTab === id ? '#5865F2' : '#2b2d31',
+                    borderRadius: 8,
+                    marginHorizontal: 2
+                },
+                onPress: () => setActiveTab(id as any)
+            },
+            React.createElement(Text, {
+                style: {
+                    color: '#fff',
+                    textAlign: 'center',
+                    fontSize: 12,
+                    fontWeight: activeTab === id ? 'bold' : 'normal'
+                }
+            }, `${icon} ${label}`)
+        );
+
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
-        React.createElement(FormSection, { key: "info", title: "📱 STALKER PRO v3.0" }, [
-            React.createElement(FormRow, { key: "v1", label: "🔒 Hidden Channel Detector", subLabel: "Tap the floating 🔒 button anywhere!" }),
-            React.createElement(FormRow, { key: "v2", label: "📋 Auto Message Search", subLabel: "Copy any User ID to auto-search" })
+        // Header
+        React.createElement(View, {
+            key: 'header',
+            style: { padding: 16, backgroundColor: '#2b2d31', marginBottom: 8 }
+        }, [
+            React.createElement(Text, {
+                key: 'title',
+                style: { color: '#fff', fontSize: 20, fontWeight: 'bold', textAlign: 'center' }
+            }, "🔍 Stalker Pro v3.0"),
+            React.createElement(Text, {
+                key: 'subtitle',
+                style: { color: '#b5bac1', fontSize: 12, textAlign: 'center', marginTop: 4 }
+            }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server for hidden channels")
         ]),
-        React.createElement(FormSection, { key: "search", title: "🔍 MANUAL SEARCH" }, [
-            React.createElement(FormInput, { key: "in", title: "User ID", placeholder: "Enter User ID", value: userId, onChangeText: setUserId, keyboardType: "numeric" }),
-            React.createElement(FormRow, { key: "btn", label: isSearching ? "⏳ Searching..." : "🔍 Search", onPress: isSearching ? undefined : handleSearch })
+
+        // Tab Buttons
+        React.createElement(View, {
+            key: 'tabs',
+            style: { flexDirection: 'row', padding: 8, marginBottom: 8 }
+        }, [
+            React.createElement(TabButton, { key: 't1', id: 'hidden', label: 'Hidden', icon: '🔒' }),
+            React.createElement(TabButton, { key: 't2', id: 'user', label: 'User Access', icon: '👤' }),
+            React.createElement(TabButton, { key: 't3', id: 'search', label: 'Messages', icon: '💬' })
         ]),
-        React.createElement(FormSection, { key: "status", title: "⚙️ STATUS" }, [
-            React.createElement(FormRow, { key: "s1", label: "Clipboard Monitor", subLabel: clipboardMonitorActive ? "✅ Active" : "❌ Inactive" }),
-            React.createElement(FormRow, { key: "s2", label: "Hidden Channel FAB", subLabel: "✅ Active" })
+
+        // ========== HIDDEN CHANNELS TAB ==========
+        activeTab === 'hidden' && [
+            // Scan button
+            React.createElement(
+                TouchableOpacity,
+                {
+                    key: 'scan-btn',
+                    style: {
+                        margin: 12,
+                        padding: 14,
+                        backgroundColor: '#5865F2',
+                        borderRadius: 12,
+                        flexDirection: 'row',
+                        justifyContent: 'center',
+                        alignItems: 'center'
+                    },
+                    onPress: scanCurrentGuild
+                },
+                React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold', fontSize: 16 } },
+                    isScanning ? "⏳ Scanning..." : "🔄 Scan Current Server")
+            ),
+
+            // Results count
+            React.createElement(Text, {
+                key: 'count',
+                style: { color: '#b5bac1', textAlign: 'center', marginBottom: 12, fontSize: 14 }
+            }, hiddenChannels.length > 0
+                ? `Found ${hiddenChannels.length} hidden channels`
+                : selectedGuild ? "No hidden channels found ✨" : "Open a server to scan"),
+
+            // Channel list
+            ...hiddenChannels.map((channel, idx) =>
+                React.createElement(
+                    TouchableOpacity,
+                    {
+                        key: `ch-${idx}`,
+                        style: {
+                            margin: 8,
+                            marginTop: 4,
+                            padding: 14,
+                            backgroundColor: '#2b2d31',
+                            borderRadius: 12,
+                            borderLeftWidth: 4,
+                            borderLeftColor: '#5865F2'
+                        },
+                        onPress: () => setExpandedChannel(expandedChannel === channel.id ? null : channel.id)
+                    },
+                    [
+                        // Channel header
+                        React.createElement(View, { key: 'hdr', style: { flexDirection: 'row', alignItems: 'center' } }, [
+                            React.createElement(Text, { key: 'icon', style: { fontSize: 18, marginRight: 10 } },
+                                getChannelTypeName(channel.type)),
+                            React.createElement(View, { key: 'info', style: { flex: 1 } }, [
+                                React.createElement(Text, { key: 'name', style: { color: '#fff', fontSize: 16, fontWeight: 'bold' } },
+                                    channel.name),
+                                channel.parentName && React.createElement(Text, { key: 'parent', style: { color: '#949ba4', fontSize: 12 } },
+                                    `in ${channel.parentName}`)
+                            ]),
+                            React.createElement(Text, { key: 'arrow', style: { color: '#b5bac1' } },
+                                expandedChannel === channel.id ? "▼" : "▶")
+                        ]),
+
+                        // Access summary
+                        React.createElement(Text, {
+                            key: 'access',
+                            style: { color: '#00b894', fontSize: 12, marginTop: 6 }
+                        }, `👥 ${channel.rolesWithAccess.length} roles, ${channel.usersWithAccess.length} users`),
+
+                        // Expanded details
+                        expandedChannel === channel.id && React.createElement(View, {
+                            key: 'details',
+                            style: { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#3f4147' }
+                        }, [
+                            // Roles
+                            channel.rolesWithAccess.length > 0 && React.createElement(Text, {
+                                key: 'roles-title',
+                                style: { color: '#fff', fontWeight: 'bold', marginBottom: 6 }
+                            }, "🏷️ Roles:"),
+                            ...channel.rolesWithAccess.map((role: any, ri: number) =>
+                                React.createElement(Text, {
+                                    key: `role-${ri}`,
+                                    style: { color: roleColor(role.color), marginLeft: 12, marginTop: 2, fontSize: 14 }
+                                }, `• ${role.name}`)
+                            ),
+
+                            // Users
+                            channel.usersWithAccess.length > 0 && React.createElement(Text, {
+                                key: 'users-title',
+                                style: { color: '#fff', fontWeight: 'bold', marginTop: 10, marginBottom: 6 }
+                            }, "👤 Direct Access:"),
+                            ...channel.usersWithAccess.map((user: any, ui: number) =>
+                                React.createElement(Text, {
+                                    key: `user-${ui}`,
+                                    style: { color: '#b5bac1', marginLeft: 12, marginTop: 2, fontSize: 14 }
+                                }, `• ${user.globalName || user.username}`)
+                            )
+                        ])
+                    ]
+                )
+            )
+        ],
+
+        // ========== USER LOOKUP TAB ==========
+        activeTab === 'user' && [
+            React.createElement(FormSection, { key: 'user-section', title: "👤 USER LOOKUP" }, [
+                React.createElement(FormInput, {
+                    key: 'input',
+                    title: "User ID",
+                    placeholder: "Enter User ID to check their access",
+                    value: lookupUserId,
+                    onChangeText: setLookupUserId,
+                    keyboardType: "numeric"
+                }),
+                React.createElement(FormRow, {
+                    key: 'btn',
+                    label: "🔍 Check Access",
+                    subLabel: selectedGuild ? `In ${selectedGuild.name}` : "Open a server first",
+                    trailing: FormRow.Arrow ? React.createElement(FormRow.Arrow, null) : null,
+                    onPress: handleUserLookup
+                })
+            ]),
+
+            // Results
+            userChannels.length > 0 && React.createElement(FormSection, {
+                key: 'results',
+                title: `✅ ${lookupUserInfo?.globalName || lookupUserInfo?.username || 'User'} has access to:`
+            }, userChannels.map((channel, idx) =>
+                React.createElement(FormRow, {
+                    key: `uc-${idx}`,
+                    label: `${getChannelTypeName(channel.type)} ${channel.name}`,
+                    subLabel: channel.parentName ? `in ${channel.parentName}` : undefined
+                })
+            )),
+
+            userChannels.length === 0 && lookupUserId.length >= 17 && React.createElement(
+                View,
+                { key: 'no-access', style: { padding: 30, alignItems: 'center' } },
+                [
+                    React.createElement(Text, { key: 't1', style: { fontSize: 40 } }, "🚫"),
+                    React.createElement(Text, { key: 't2', style: { color: '#fff', fontSize: 16, marginTop: 10 } },
+                        "No hidden channel access"),
+                    React.createElement(Text, { key: 't3', style: { color: '#b5bac1', marginTop: 4, textAlign: 'center' } },
+                        "This user can't see any channels you can't see")
+                ]
+            )
+        ],
+
+        // ========== MESSAGE SEARCH TAB ==========
+        activeTab === 'search' && [
+            React.createElement(FormSection, { key: 'search-info', title: "💬 MESSAGE SEARCH" }, [
+                React.createElement(FormRow, {
+                    key: 'auto',
+                    label: "📋 Auto-Detection",
+                    subLabel: clipboardMonitorActive
+                        ? "✅ Copy any User ID to auto-search!"
+                        : "❌ Clipboard monitoring inactive"
+                })
+            ]),
+            React.createElement(FormSection, { key: 'manual', title: "🔍 MANUAL SEARCH" }, [
+                React.createElement(FormInput, {
+                    key: 'input',
+                    title: "User ID",
+                    placeholder: "Enter Discord User ID",
+                    value: userId,
+                    onChangeText: setUserId,
+                    keyboardType: "numeric"
+                }),
+                React.createElement(FormRow, {
+                    key: 'btn',
+                    label: isSearchingUser ? "⏳ Searching..." : "🔍 Search Messages",
+                    subLabel: "Find their recent messages across servers",
+                    onPress: isSearchingUser ? undefined : handleUserSearch
+                })
+            ])
+        ],
+
+        // Footer
+        React.createElement(View, {
+            key: 'footer',
+            style: { padding: 20, alignItems: 'center' }
+        }, [
+            React.createElement(Text, {
+                key: 'tip',
+                style: { color: '#949ba4', fontSize: 11, textAlign: 'center' }
+            }, "💡 Tip: Copy any User ID and it auto-searches!\n🔒 Open a server and tap Scan to find hidden channels")
         ])
     ]);
 }
 
 export const settings = StalkerSettings;
-
-// Create overlay element
-let overlayElement: any = null;
 
 export const onLoad = () => {
     logger.log("=== STALKER PRO v3.0 LOADING ===");
@@ -831,16 +613,10 @@ export const onLoad = () => {
     if (Clipboard?.getString) {
         clipboardMonitorActive = true;
         checkIntervalId = setInterval(checkClipboardContent, 2000);
+        logger.log("Clipboard monitoring started");
     }
 
-    // Try to inject floating button
-    try {
-        // This creates an overlay but may need adjustment based on how Vendetta handles root views
-        showToast("🔒 Stalker Pro v3.0 ready!", getAssetIDByName("Check"));
-        showToast("Tap 🔒 button for Hidden Channels", getAssetIDByName("Arrow"));
-    } catch (e) {
-        logger.error("FAB setup failed:", e);
-    }
+    showToast("🔍 Stalker Pro v3.0 ready!", getAssetIDByName("Check"));
 };
 
 export const onUnload = () => {
