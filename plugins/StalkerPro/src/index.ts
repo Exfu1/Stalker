@@ -214,22 +214,31 @@ async function autoSearchUser(userId: string) {
     showToast(`✅ Found ${allMsgs.length} messages!`, getAssetIDByName("Check"));
 
     // Show location after delay
+    const latest = allMsgs[0];
+    const channelName = getChannelName(latest.channelId);
+    const guildName = getGuildName(latest.guildId);
+    const messageLink = `https://discord.com/channels/${latest.guildId}/${latest.channelId}/${latest.id}`;
+
     setTimeout(() => {
-        if (allMsgs.length > 0) {
-            const latest = allMsgs[0];
-            showToast(`📍 Latest in #${getChannelName(latest.channelId)}`, getAssetIDByName("ic_message"));
-        }
+        showToast(`📍 #${channelName} in ${guildName}`, getAssetIDByName("ic_message"));
     }, 1500);
 
-    // Auto-open after another delay
-    setTimeout(() => {
-        if (allMsgs.length > 0) {
-            const latest = allMsgs[0];
-            showToast(`👆 Opening message...`, getAssetIDByName("Arrow"));
-            openMessageLink(latest.guildId, latest.channelId, latest.id);
+    // Copy link to clipboard and notify
+    setTimeout(async () => {
+        try {
+            if (Clipboard?.setString) {
+                Clipboard.setString(messageLink);
+                showToast(`📋 Link copied! Paste anywhere to open`, getAssetIDByName("Check"));
+            } else {
+                showToast(`🔗 Go to #${channelName} in ${guildName}`, getAssetIDByName("Arrow"));
+            }
+        } catch (e) {
+            logger.error("Failed to copy link:", e);
+            showToast(`🔗 #${channelName} in ${guildName}`, getAssetIDByName("Arrow"));
         }
     }, 3000);
 }
+
 
 async function checkClipboardContent() {
     try {
