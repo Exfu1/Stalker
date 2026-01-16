@@ -4,14 +4,7 @@ import { React, ReactNative, FluxDispatcher, NavigationNative } from "@vendetta/
 import { Forms, General } from "@vendetta/ui/components";
 import { getAssetIDByName } from "@vendetta/ui/assets";
 import { showToast } from "@vendetta/ui/toasts";
-
-// Try to import commands API (may not be available in all versions)
-let commands: any;
-try {
-    commands = require("@vendetta/commands");
-} catch (e) {
-    logger.log("Commands API not available");
-}
+import { after } from "@vendetta/patcher";
 
 const { FormSection, FormRow, FormInput, FormDivider } = Forms;
 const { ScrollView, View, Text, TouchableOpacity, ActivityIndicator, Linking } = General;
@@ -26,6 +19,11 @@ const GuildMemberStore = findByStoreName("GuildMemberStore");
 const ChannelStore = findByStoreName("ChannelStore");
 const RelationshipStore = findByStoreName("RelationshipStore");
 
+// Find UserProfileSection for profile injection
+const UserProfileSection = findByProps("UserProfileSection")?.UserProfileSection ||
+    findByProps("default", "UserProfileSection") ||
+    findByProps("UserProfileSection");
+
 // REST API for fetching messages
 const RestAPI = findByProps("getAPIBaseURL", "get") || findByProps("API_HOST", "get");
 
@@ -39,15 +37,11 @@ const Router = findByProps("transitionToGuild", "transitionTo") ||
 const MessageActions = findByProps("jumpToMessage") ||
     findByProps("fetchMessages", "jumpToMessage");
 
-// Channel selector for navigating to channel first
-const ChannelActions = findByProps("selectChannel") ||
-    findByProps("selectVoiceChannel", "selectChannel");
+// Store patches for cleanup
+let patches: (() => void)[] = [];
 
 // Store the target user ID
 let targetUserId: string = "";
-
-// Store command unregister function
-let unregisterCommand: (() => void) | null = null;
 
 // Relationship type constants
 const RelationshipTypes = {
@@ -65,7 +59,6 @@ const RelationshipTypes = {
 function getRelationship(userId: string) {
     try {
         if (!RelationshipStore) {
-            logger.warn("RelationshipStore not found");
             return null;
         }
 
@@ -131,13 +124,11 @@ function getMutualGuilds(userId: string) {
 }
 
 /**
- * Open Discord message link - this opens the message in Discord's navigation
+ * Open Discord message link
  */
 function openMessageLink(guildId: string, channelId: string, messageId: string) {
     const messageUrl = `https://discord.com/channels/${guildId}/${channelId}/${messageId}`;
     const discordUrl = `discord://-/channels/${guildId}/${channelId}/${messageId}`;
-
-    logger.log("Attempting to open:", discordUrl);
 
     // Method 1: Try FluxDispatcher action
     try {
@@ -148,11 +139,9 @@ function openMessageLink(guildId: string, channelId: string, messageId: string) 
                 channelId: channelId,
                 guildId: guildId
             });
-            logger.log("FluxDispatcher NAVIGATE_TO_JUMP_TO_MESSAGE dispatched");
+            return true;
         }
-    } catch (e) {
-        logger.error("FluxDispatcher method failed:", e);
-    }
+    } catch (e) { }
 
     // Method 2: Try jumpToMessage function
     try {
@@ -162,52 +151,28 @@ function openMessageLink(guildId: string, channelId: string, messageId: string) 
                 messageId: messageId,
                 flash: true
             });
-            logger.log("jumpToMessage called");
             return true;
         }
-    } catch (e) {
-        logger.error("jumpToMessage method failed:", e);
-    }
+    } catch (e) { }
 
     // Method 3: Try Router transitionTo
     try {
         if (Router?.transitionToGuild) {
             Router.transitionToGuild(guildId, channelId, messageId);
-            logger.log("transitionToGuild called");
             return true;
         } else if (Router?.transitionTo) {
             Router.transitionTo(`/channels/${guildId}/${channelId}/${messageId}`);
-            logger.log("transitionTo called");
             return true;
         }
-    } catch (e) {
-        logger.error("Router method failed:", e);
-    }
+    } catch (e) { }
 
     // Method 4: Try opening discord:// URL scheme
     try {
         if (URLOpener?.openURL) {
             URLOpener.openURL(discordUrl);
-            logger.log("openURL called with discord:// scheme");
             return true;
         }
-    } catch (e) {
-        logger.error("URL opener method failed:", e);
-    }
-
-    // Method 5: Dispatch MESSAGE_LINK_PRESSED action
-    try {
-        if (FluxDispatcher) {
-            FluxDispatcher.dispatch({
-                type: "MESSAGE_LINK_PRESSED",
-                href: messageUrl
-            });
-            logger.log("MESSAGE_LINK_PRESSED dispatched");
-            return true;
-        }
-    } catch (e) {
-        logger.error("MESSAGE_LINK_PRESSED dispatch failed:", e);
-    }
+    } catch (e) { }
 
     return false;
 }
@@ -218,7 +183,6 @@ function openMessageLink(guildId: string, channelId: string, messageId: string) 
 async function searchMessagesInGuild(guildId: string, authorId: string): Promise<any[]> {
     try {
         if (!RestAPI?.get) {
-            logger.error("RestAPI not found");
             return [];
         }
 
@@ -298,6 +262,54 @@ function getUserInfo(userId: string) {
     return null;
 }
 
+/**
+ * Quick search for messages across all mutual guilds (for profile button)
+ */
+async function quickSearchMessages(userId: string) {
+    const guilds = getMutualGuilds(userId);
+
+    if (guilds.length === 0) {
+        showToast("No mutual servers found", getAssetIDByName("Small"));
+        return;
+    }
+
+    showToast(`Searching ${guilds.length} servers...`, getAssetIDByName("ic_search"));
+
+    const allMessages: any[] = [];
+
+    for (let i = 0; i < Math.min(guilds.length, 10); i++) {
+        try {
+            const messages = await searchMessagesInGuild(guilds[i].id, userId);
+            allMessages.push(...messages);
+        } catch (e) {
+            // Continue
+        }
+
+        if (i < guilds.length - 1) {
+            await new Promise(r => setTimeout(r, 300));
+        }
+    }
+
+    // Sort by timestamp
+    allMessages.sort((a, b) =>
+        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    );
+
+    const recentCount = Math.min(allMessages.length, 50);
+    showToast(`Found ${allMessages.length} messages!`, getAssetIDByName("Check"));
+
+    // Show the most recent message details
+    if (allMessages.length > 0) {
+        const latest = allMessages[0];
+        const content = latest.content.length > 40
+            ? latest.content.substring(0, 40) + "..."
+            : latest.content;
+        setTimeout(() => {
+            showToast(`Latest: "${content}"`, getAssetIDByName("ic_message"));
+        }, 1500);
+    }
+}
+
 // Settings/UI Component
 function StalkerSettings() {
     const [userId, setUserId] = React.useState(targetUserId);
@@ -320,14 +332,11 @@ function StalkerSettings() {
         targetUserId = userId;
 
         try {
-            // Get user info
             const info = getUserInfo(userId);
             setUserInfo(info);
 
-            // Get relationship status - THIS IS THE KEY FIX!
             const rel = getRelationship(userId);
             setRelationship(rel);
-            logger.log("Relationship status:", rel);
 
             setSearchProgress("Finding mutual servers...");
             const guilds = getMutualGuilds(userId);
@@ -362,7 +371,6 @@ function StalkerSettings() {
             );
 
             setResults(allMessages.slice(0, 50));
-
             showToast(`Found ${allMessages.length} messages`, getAssetIDByName("Check"));
         } catch (e: any) {
             showToast("Error: " + (e?.message || "Unknown"), getAssetIDByName("Small"));
@@ -401,16 +409,10 @@ function StalkerSettings() {
     };
 
     const handleMessageTap = (msg: any) => {
-        logger.log(`Tapping message: ${msg.id} in channel ${msg.channelId}`);
         showToast("Opening message...", getAssetIDByName("Check"));
-
         const success = openMessageLink(msg.guildId, msg.channelId, msg.id);
-
         if (!success) {
-            // Fallback: Copy the message link
-            const link = `https://discord.com/channels/${msg.guildId}/${msg.channelId}/${msg.id}`;
-            showToast("Navigation failed, check logs", getAssetIDByName("Small"));
-            logger.log("Navigation failed. Message link:", link);
+            showToast("Navigation failed", getAssetIDByName("Small"));
         }
     };
 
@@ -440,7 +442,7 @@ function StalkerSettings() {
                 ]
             ),
 
-            // User Info with Relationship Status - NEW!
+            // User Info with Relationship Status
             userInfo && React.createElement(
                 FormSection,
                 { key: "userInfo", title: "👤 USER INFO" },
@@ -529,7 +531,7 @@ function StalkerSettings() {
                 )
             ),
 
-            // Debug Info Section - helpful for troubleshooting
+            // Debug Info Section
             React.createElement(
                 FormSection,
                 { key: "debug", title: "🔧 DEBUG INFO" },
@@ -545,9 +547,9 @@ function StalkerSettings() {
                         subLabel: UserStore ? "✅ Found" : "❌ Not Found"
                     }),
                     React.createElement(FormRow, {
-                        key: "cmdApi",
-                        label: "Commands API",
-                        subLabel: commands ? "✅ Available" : "❌ Not Available"
+                        key: "profileSection",
+                        label: "Profile Injection",
+                        subLabel: UserProfileSection ? "✅ Available" : "❌ Not Available"
                     })
                 ]
             ),
@@ -557,6 +559,11 @@ function StalkerSettings() {
                 FormSection,
                 { key: "help", title: "ℹ️ HOW TO USE" },
                 [
+                    React.createElement(FormRow, {
+                        key: "h0",
+                        label: "📱 Quick Access",
+                        subLabel: "Tap any user → scroll down → Stalker Pro section"
+                    }),
                     React.createElement(FormRow, {
                         key: "h1",
                         label: "1. Get User ID",
@@ -571,11 +578,6 @@ function StalkerSettings() {
                         key: "h3",
                         label: "3. View Results",
                         subLabel: "See friend status, mutual servers & messages"
-                    }),
-                    React.createElement(FormRow, {
-                        key: "h4",
-                        label: "4. Tap Message",
-                        subLabel: "Opens message location in Discord"
                     })
                 ]
             )
@@ -586,47 +588,103 @@ function StalkerSettings() {
 export const settings = StalkerSettings;
 
 export const onLoad = () => {
-    logger.log("Stalker Pro loaded");
+    logger.log("Stalker Pro loading...");
     logger.log("RelationshipStore found:", !!RelationshipStore);
-    logger.log("UserStore found:", !!UserStore);
-    logger.log("GuildMemberStore found:", !!GuildMemberStore);
-    logger.log("Commands API found:", !!commands);
+    logger.log("UserProfileSection found:", !!UserProfileSection);
 
-    // Try to register slash command if available
-    if (commands?.registerCommand) {
-        try {
-            unregisterCommand = commands.registerCommand({
-                name: "stalk",
-                displayName: "stalk",
-                description: "Open Stalker Pro to search for a user",
-                displayDescription: "Open Stalker Pro settings to search for user messages",
-                type: 1,
-                inputType: 1,
-                options: [],
-                execute: async (args: any[], ctx: any) => {
-                    showToast("Open plugin settings to use Stalker Pro", getAssetIDByName("Check"));
-                    return { content: "Open Stalker Pro from plugin settings to search!" };
+    // Inject into user profile sections
+    try {
+        const profileModule = findByProps("UserProfileSection") ||
+            findByProps("default", "UserProfileSection");
+
+        if (profileModule?.default || profileModule?.UserProfileSection) {
+            const target = profileModule.default ? "default" : "UserProfileSection";
+
+            const unpatch = after(target, profileModule, (args: any[], res: any) => {
+                try {
+                    // Get userId from props
+                    const userId = args[0]?.userId;
+                    if (!userId) return res;
+
+                    // Don't show for current user
+                    const currentUser = UserStore?.getCurrentUser?.();
+                    if (currentUser && userId === currentUser.id) return res;
+
+                    // Check if we can inject
+                    if (!res?.props?.children || !Array.isArray(res.props.children)) {
+                        return res;
+                    }
+
+                    // Get relationship and mutual guilds
+                    const rel = getRelationship(userId);
+                    const mutualGuilds = getMutualGuilds(userId);
+                    const userInfo = getUserInfo(userId);
+
+                    // Create Stalker Pro section
+                    const stalkerSection = React.createElement(
+                        FormSection,
+                        { key: "stalker-pro", title: "🔍 Stalker Pro" },
+                        [
+                            // Relationship status row
+                            rel && React.createElement(FormRow, {
+                                key: "relationship",
+                                label: `${rel.emoji} ${rel.label}`,
+                                subLabel: rel.isFriend ? "You are friends" : "Not friends"
+                            }),
+                            React.createElement(FormDivider, { key: "div1" }),
+                            // Recent messages button
+                            React.createElement(FormRow, {
+                                key: "recent",
+                                label: "🔎 Find Recent Messages",
+                                subLabel: `Search across ${mutualGuilds.length} mutual servers`,
+                                trailing: FormRow.Arrow ? React.createElement(FormRow.Arrow, null) : null,
+                                onPress: () => quickSearchMessages(userId)
+                            }),
+                            React.createElement(FormDivider, { key: "div2" }),
+                            // Mutual servers info
+                            React.createElement(FormRow, {
+                                key: "servers",
+                                label: `🏠 ${mutualGuilds.length} Mutual Servers`,
+                                subLabel: mutualGuilds.slice(0, 3).map((g: any) => g.name).join(", ") +
+                                    (mutualGuilds.length > 3 ? "..." : "")
+                            })
+                        ]
+                    );
+
+                    // Inject the section
+                    res.props.children.push(stalkerSection);
+
+                } catch (e) {
+                    logger.error("Error injecting profile section:", e);
                 }
+
+                return res;
             });
-            logger.log("Stalk command registered");
-        } catch (e) {
-            logger.error("Failed to register command:", e);
+
+            patches.push(unpatch);
+            logger.log("Profile section injection enabled!");
+        } else {
+            logger.warn("UserProfileSection not found - profile injection disabled");
         }
+    } catch (e) {
+        logger.error("Failed to setup profile injection:", e);
     }
 
     showToast("Stalker Pro ready!", getAssetIDByName("Check"));
 };
 
 export const onUnload = () => {
-    logger.log("Stalker Pro unloaded");
+    logger.log("Stalker Pro unloading...");
 
-    // Unregister command if it was registered
-    if (unregisterCommand) {
+    // Unpatch all patches
+    for (const unpatch of patches) {
         try {
-            unregisterCommand();
-            logger.log("Stalk command unregistered");
+            unpatch();
         } catch (e) {
-            logger.error("Failed to unregister command:", e);
+            logger.error("Error unpatching:", e);
         }
     }
+    patches = [];
+
+    logger.log("Stalker Pro unloaded");
 };
