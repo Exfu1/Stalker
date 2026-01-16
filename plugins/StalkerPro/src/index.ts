@@ -1,6 +1,6 @@
 import { logger } from "@vendetta";
-import { findByStoreName, findByProps, findByName, findByDisplayName } from "@vendetta/metro";
-import { React, ReactNative, FluxDispatcher, NavigationNative } from "@vendetta/metro/common";
+import { findByStoreName, findByProps } from "@vendetta/metro";
+import { React, ReactNative, FluxDispatcher } from "@vendetta/metro/common";
 import { Forms, General } from "@vendetta/ui/components";
 import { getAssetIDByName } from "@vendetta/ui/assets";
 import { showToast } from "@vendetta/ui/toasts";
@@ -9,328 +9,110 @@ import { after } from "@vendetta/patcher";
 const { FormSection, FormRow, FormInput, FormDivider } = Forms;
 const { ScrollView, View, Text, TouchableOpacity, ActivityIndicator, Linking } = General;
 
-// Also try to get Linking from ReactNative if not in General
 const URLOpener = Linking || ReactNative?.Linking;
 
-// Discord stores and utilities
+// Discord stores
 const UserStore = findByStoreName("UserStore");
 const GuildStore = findByStoreName("GuildStore");
 const GuildMemberStore = findByStoreName("GuildMemberStore");
 const ChannelStore = findByStoreName("ChannelStore");
 const RelationshipStore = findByStoreName("RelationshipStore");
 
-// Try MANY different ways to find profile-related modules
-const UserProfileModule =
-    findByProps("UserProfileSection") ||
-    findByProps("default", "UserProfileSection") ||
-    findByName("UserProfileSection") ||
-    findByDisplayName("UserProfileSection") ||
-    findByProps("UserProfile") ||
-    findByName("UserProfile") ||
-    findByDisplayName("UserProfile") ||
-    findByProps("ProfileBanner") ||
-    findByProps("UserProfileHeader") ||
-    findByName("UserProfileHeader") ||
-    findByProps("UserProfileBody") ||
-    null;
-
-// Try to find the specific section component
-const UserProfileSectionModule =
-    findByProps("UserProfileSection")?.UserProfileSection ||
-    findByName("UserProfileSection") ||
-    findByDisplayName("UserProfileSection") ||
-    findByProps("Section", "UserProfileSection")?.Section ||
-    null;
-
-// REST API for fetching messages
+// REST API
 const RestAPI = findByProps("getAPIBaseURL", "get") || findByProps("API_HOST", "get");
 
-// Try to find Router/Navigation modules
-const Router = findByProps("transitionToGuild", "transitionTo") ||
-    findByProps("transitionTo") ||
-    findByProps("replaceWith", "back") ||
-    findByProps("openURL");
+// Navigation
+const Router = findByProps("transitionToGuild", "transitionTo") || findByProps("transitionTo");
+const MessageActions = findByProps("jumpToMessage");
 
-// Message link handler
-const MessageActions = findByProps("jumpToMessage") ||
-    findByProps("fetchMessages", "jumpToMessage");
-
-// Store patches for cleanup
-let patches: (() => void)[] = [];
-
-// Store the target user ID
+// Store patches - use array for multiple patches
+let patches: Function[] = [];
 let targetUserId: string = "";
-
-// Relationship type constants
-const RelationshipTypes = {
-    NONE: 0,
-    FRIEND: 1,
-    BLOCKED: 2,
-    PENDING_INCOMING: 3,
-    PENDING_OUTGOING: 4,
-    IMPLICIT: 5
-};
-
-// Profile injection status for debugging
 let profileInjectionStatus = "Not attempted";
 
-/**
- * Get relationship status with a user
- */
+const RelationshipTypes = { NONE: 0, FRIEND: 1, BLOCKED: 2, PENDING_INCOMING: 3, PENDING_OUTGOING: 4 };
+
 function getRelationship(userId: string) {
+    if (!RelationshipStore) return null;
     try {
-        if (!RelationshipStore) {
-            return null;
-        }
-
-        const type = RelationshipStore.getRelationshipType?.(userId) ??
-            RelationshipStore.getRelationship?.(userId)?.type ??
-            RelationshipTypes.NONE;
-
+        const type = RelationshipStore.getRelationshipType?.(userId) ?? 0;
         return {
-            type: type,
-            isFriend: type === RelationshipTypes.FRIEND,
-            isBlocked: type === RelationshipTypes.BLOCKED,
-            hasPendingIncoming: type === RelationshipTypes.PENDING_INCOMING,
-            hasPendingOutgoing: type === RelationshipTypes.PENDING_OUTGOING,
-            label: getRelationshipLabel(type),
-            emoji: getRelationshipEmoji(type)
+            type,
+            isFriend: type === 1,
+            emoji: type === 1 ? "✅" : type === 2 ? "🚫" : type === 3 ? "📨" : type === 4 ? "📤" : "❌",
+            label: type === 1 ? "Friend" : type === 2 ? "Blocked" : type === 3 ? "Pending In" : type === 4 ? "Pending Out" : "Not Friends"
         };
-    } catch (e) {
-        logger.error("Error getting relationship:", e);
-        return null;
-    }
+    } catch { return null; }
 }
 
-function getRelationshipLabel(type: number): string {
-    switch (type) {
-        case RelationshipTypes.FRIEND: return "Friend";
-        case RelationshipTypes.BLOCKED: return "Blocked";
-        case RelationshipTypes.PENDING_INCOMING: return "Pending (Incoming)";
-        case RelationshipTypes.PENDING_OUTGOING: return "Pending (Outgoing)";
-        default: return "Not Friends";
-    }
-}
-
-function getRelationshipEmoji(type: number): string {
-    switch (type) {
-        case RelationshipTypes.FRIEND: return "✅";
-        case RelationshipTypes.BLOCKED: return "🚫";
-        case RelationshipTypes.PENDING_INCOMING: return "📨";
-        case RelationshipTypes.PENDING_OUTGOING: return "📤";
-        default: return "❌";
-    }
-}
-
-/**
- * Get all guilds where both you and the target user are members
- */
 function getMutualGuilds(userId: string) {
+    if (!GuildStore || !GuildMemberStore) return [];
     try {
-        const guilds = GuildStore ? Object.values(GuildStore.getGuilds() || {}) : [];
-        const mutual: any[] = [];
+        const guilds = Object.values(GuildStore.getGuilds() || {}) as any[];
+        return guilds.filter(g => GuildMemberStore.getMember(g.id, userId));
+    } catch { return []; }
+}
 
-        for (const guild of guilds) {
-            const member = GuildMemberStore?.getMember((guild as any).id, userId);
-            if (member) {
-                mutual.push(guild);
-            }
-        }
+async function searchMessagesInGuild(guildId: string, authorId: string): Promise<any[]> {
+    if (!RestAPI?.get) return [];
+    try {
+        const res = await RestAPI.get({
+            url: `/guilds/${guildId}/messages/search`,
+            query: { author_id: authorId, include_nsfw: true }
+        });
+        return (res?.body?.messages || []).map((m: any[]) => ({
+            id: m[0].id, content: m[0].content || "[No text]",
+            channelId: m[0].channel_id, guildId, timestamp: m[0].timestamp
+        }));
+    } catch { return []; }
+}
 
-        return mutual;
-    } catch (e) {
-        logger.error("Error getting mutual guilds:", e);
-        return [];
+async function quickSearchMessages(userId: string) {
+    const guilds = getMutualGuilds(userId);
+    if (guilds.length === 0) { showToast("No mutual servers", getAssetIDByName("Small")); return; }
+
+    showToast(`Searching ${guilds.length} servers...`, getAssetIDByName("ic_search"));
+    let allMsgs: any[] = [];
+
+    for (let i = 0; i < Math.min(guilds.length, 8); i++) {
+        const msgs = await searchMessagesInGuild(guilds[i].id, userId);
+        allMsgs.push(...msgs);
+        if (i < guilds.length - 1) await new Promise(r => setTimeout(r, 250));
+    }
+
+    allMsgs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    showToast(`Found ${allMsgs.length} messages!`, getAssetIDByName("Check"));
+
+    if (allMsgs.length > 0) {
+        const latest = allMsgs[0].content.substring(0, 35);
+        setTimeout(() => showToast(`Latest: "${latest}..."`, getAssetIDByName("ic_message")), 1200);
     }
 }
 
-/**
- * Open Discord message link
- */
+function getChannelName(id: string) { return ChannelStore?.getChannel(id)?.name || "unknown"; }
+function getGuildName(id: string) { return GuildStore?.getGuild(id)?.name || "Unknown"; }
+function getUserInfo(id: string) {
+    const u = UserStore?.getUser(id);
+    return u ? { username: u.username, globalName: u.globalName, id: u.id } : null;
+}
+
 function openMessageLink(guildId: string, channelId: string, messageId: string) {
-    const messageUrl = `https://discord.com/channels/${guildId}/${channelId}/${messageId}`;
-    const discordUrl = `discord://-/channels/${guildId}/${channelId}/${messageId}`;
-
-    // Method 1: Try FluxDispatcher action
     try {
-        if (FluxDispatcher) {
-            FluxDispatcher.dispatch({
-                type: "NAVIGATE_TO_JUMP_TO_MESSAGE",
-                messageId: messageId,
-                channelId: channelId,
-                guildId: guildId
-            });
-            return true;
-        }
-    } catch (e) { }
-
-    // Method 2: Try jumpToMessage function
+        FluxDispatcher?.dispatch({ type: "NAVIGATE_TO_JUMP_TO_MESSAGE", messageId, channelId, guildId });
+        return true;
+    } catch { }
     try {
-        if (MessageActions?.jumpToMessage) {
-            MessageActions.jumpToMessage({
-                channelId: channelId,
-                messageId: messageId,
-                flash: true
-            });
-            return true;
-        }
-    } catch (e) { }
-
-    // Method 3: Try Router transitionTo
+        MessageActions?.jumpToMessage({ channelId, messageId, flash: true });
+        return true;
+    } catch { }
     try {
-        if (Router?.transitionToGuild) {
-            Router.transitionToGuild(guildId, channelId, messageId);
-            return true;
-        } else if (Router?.transitionTo) {
-            Router.transitionTo(`/channels/${guildId}/${channelId}/${messageId}`);
-            return true;
-        }
-    } catch (e) { }
-
-    // Method 4: Try opening discord:// URL scheme
-    try {
-        if (URLOpener?.openURL) {
-            URLOpener.openURL(discordUrl);
-            return true;
-        }
-    } catch (e) { }
-
+        URLOpener?.openURL(`discord://-/channels/${guildId}/${channelId}/${messageId}`);
+        return true;
+    } catch { }
     return false;
 }
 
-/**
- * Search for messages from a user in a specific guild
- */
-async function searchMessagesInGuild(guildId: string, authorId: string): Promise<any[]> {
-    try {
-        if (!RestAPI?.get) {
-            return [];
-        }
-
-        const response = await RestAPI.get({
-            url: `/guilds/${guildId}/messages/search`,
-            query: {
-                author_id: authorId,
-                include_nsfw: true
-            }
-        });
-
-        if (response?.body?.messages) {
-            return response.body.messages.map((msgArray: any[]) => {
-                const msg = msgArray[0];
-                return {
-                    id: msg.id,
-                    content: msg.content || "[No text content]",
-                    channelId: msg.channel_id,
-                    guildId: guildId,
-                    timestamp: msg.timestamp,
-                    attachments: msg.attachments?.length || 0
-                };
-            });
-        }
-
-        return [];
-    } catch (e: any) {
-        if (e?.status !== 403) {
-            logger.error(`Error searching guild ${guildId}:`, e?.message || e);
-        }
-        return [];
-    }
-}
-
-/**
- * Get channel name by ID
- */
-function getChannelName(channelId: string): string {
-    try {
-        const channel = ChannelStore?.getChannel(channelId);
-        return channel?.name || "unknown";
-    } catch {
-        return "unknown";
-    }
-}
-
-/**
- * Get guild name by ID
- */
-function getGuildName(guildId: string): string {
-    try {
-        const guild = GuildStore?.getGuild(guildId);
-        return guild?.name || "Unknown Server";
-    } catch {
-        return "Unknown Server";
-    }
-}
-
-/**
- * Get user info from store
- */
-function getUserInfo(userId: string) {
-    try {
-        const user = UserStore?.getUser(userId);
-        if (user) {
-            return {
-                username: user.username,
-                globalName: user.globalName,
-                id: user.id,
-                avatar: user.avatar,
-                discriminator: user.discriminator
-            };
-        }
-    } catch (e) {
-        logger.error("Error getting user info:", e);
-    }
-    return null;
-}
-
-/**
- * Quick search for messages across all mutual guilds (for profile button)
- */
-async function quickSearchMessages(userId: string) {
-    const guilds = getMutualGuilds(userId);
-
-    if (guilds.length === 0) {
-        showToast("No mutual servers found", getAssetIDByName("Small"));
-        return;
-    }
-
-    showToast(`Searching ${guilds.length} servers...`, getAssetIDByName("ic_search"));
-
-    const allMessages: any[] = [];
-
-    for (let i = 0; i < Math.min(guilds.length, 10); i++) {
-        try {
-            const messages = await searchMessagesInGuild(guilds[i].id, userId);
-            allMessages.push(...messages);
-        } catch (e) {
-            // Continue
-        }
-
-        if (i < guilds.length - 1) {
-            await new Promise(r => setTimeout(r, 300));
-        }
-    }
-
-    // Sort by timestamp
-    allMessages.sort((a, b) =>
-        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-    );
-
-    showToast(`Found ${allMessages.length} messages!`, getAssetIDByName("Check"));
-
-    // Show the most recent message details
-    if (allMessages.length > 0) {
-        const latest = allMessages[0];
-        const content = latest.content.length > 40
-            ? latest.content.substring(0, 40) + "..."
-            : latest.content;
-        setTimeout(() => {
-            showToast(`Latest: "${content}"`, getAssetIDByName("ic_message"));
-        }, 1500);
-    }
-}
-
-// Settings/UI Component
+// Settings Component
 function StalkerSettings() {
     const [userId, setUserId] = React.useState(targetUserId);
     const [results, setResults] = React.useState<any[]>([]);
@@ -341,438 +123,187 @@ function StalkerSettings() {
     const [searchProgress, setSearchProgress] = React.useState("");
 
     const handleSearch = async () => {
-        if (!userId || userId.length < 17) {
-            showToast("Enter a valid User ID (17-19 digits)", getAssetIDByName("Small"));
-            return;
+        if (!userId || userId.length < 17) { showToast("Invalid User ID", getAssetIDByName("Small")); return; }
+        setIsSearching(true); setResults([]); targetUserId = userId;
+
+        const info = getUserInfo(userId); setUserInfo(info);
+        const rel = getRelationship(userId); setRelationship(rel);
+        const guilds = getMutualGuilds(userId); setMutualServers(guilds);
+
+        if (guilds.length === 0) { showToast("No mutual servers", getAssetIDByName("Small")); setIsSearching(false); return; }
+
+        const allMsgs: any[] = [];
+        for (let i = 0; i < Math.min(guilds.length, 12); i++) {
+            setSearchProgress(`${guilds[i].name} (${i + 1}/${Math.min(guilds.length, 12)})`);
+            const msgs = await searchMessagesInGuild(guilds[i].id, userId);
+            allMsgs.push(...msgs);
+            await new Promise(r => setTimeout(r, 350));
         }
-
-        setIsSearching(true);
-        setResults([]);
-        setSearchProgress("Finding user info...");
-        targetUserId = userId;
-
-        try {
-            const info = getUserInfo(userId);
-            setUserInfo(info);
-
-            const rel = getRelationship(userId);
-            setRelationship(rel);
-
-            setSearchProgress("Finding mutual servers...");
-            const guilds = getMutualGuilds(userId);
-            setMutualServers(guilds);
-
-            if (guilds.length === 0) {
-                showToast("No mutual servers found", getAssetIDByName("Small"));
-                setIsSearching(false);
-                return;
-            }
-
-            const allMessages: any[] = [];
-
-            for (let i = 0; i < Math.min(guilds.length, 15); i++) {
-                const guild = guilds[i];
-                setSearchProgress(`${guild.name} (${i + 1}/${Math.min(guilds.length, 15)})`);
-
-                try {
-                    const messages = await searchMessagesInGuild(guild.id, userId);
-                    allMessages.push(...messages);
-                } catch (e) {
-                    // Continue
-                }
-
-                if (i < guilds.length - 1) {
-                    await new Promise(r => setTimeout(r, 400));
-                }
-            }
-
-            allMessages.sort((a, b) =>
-                new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-            );
-
-            setResults(allMessages.slice(0, 50));
-            showToast(`Found ${allMessages.length} messages`, getAssetIDByName("Check"));
-        } catch (e: any) {
-            showToast("Error: " + (e?.message || "Unknown"), getAssetIDByName("Small"));
-        } finally {
-            setIsSearching(false);
-            setSearchProgress("");
-        }
-    };
-
-    const handleSearchInGuild = async (guild: any) => {
-        setIsSearching(true);
-        setSearchProgress(`Searching ${guild.name}...`);
-
-        try {
-            const messages = await searchMessagesInGuild(guild.id, userId);
-            messages.sort((a: any, b: any) =>
-                new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-            );
-            setResults(messages);
-            showToast(`Found ${messages.length} messages`, getAssetIDByName("Check"));
-        } catch (e: any) {
-            showToast("Error: " + (e?.message || "Unknown"), getAssetIDByName("Small"));
-        } finally {
-            setIsSearching(false);
-            setSearchProgress("");
-        }
+        allMsgs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        setResults(allMsgs.slice(0, 50));
+        showToast(`Found ${allMsgs.length} messages`, getAssetIDByName("Check"));
+        setIsSearching(false); setSearchProgress("");
     };
 
     const formatTime = (ts: string) => {
-        try {
-            const d = new Date(ts);
-            return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-        } catch {
-            return ts;
-        }
+        try { const d = new Date(ts); return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`; }
+        catch { return ts; }
     };
 
-    const handleMessageTap = (msg: any) => {
-        showToast("Opening message...", getAssetIDByName("Check"));
-        const success = openMessageLink(msg.guildId, msg.channelId, msg.id);
-        if (!success) {
-            showToast("Navigation failed", getAssetIDByName("Small"));
-        }
-    };
-
-    return React.createElement(
-        ScrollView,
-        { style: { flex: 1, backgroundColor: '#1e1f22' } },
-        [
-            // Search Section
-            React.createElement(
-                FormSection,
-                { key: "search", title: "🔍 USER SEARCH" },
-                [
-                    React.createElement(FormInput, {
-                        key: "input",
-                        title: "User ID",
-                        placeholder: "Enter Discord User ID",
-                        value: userId,
-                        onChangeText: setUserId,
-                        keyboardType: "numeric"
-                    }),
-                    React.createElement(FormRow, {
-                        key: "searchBtn",
-                        label: isSearching ? "⏳ Searching..." : "🔍 Search All Servers",
-                        subLabel: isSearching ? searchProgress : "Find messages across mutual servers",
-                        onPress: isSearching ? undefined : handleSearch
-                    })
-                ]
-            ),
-
-            // User Info with Relationship Status
-            userInfo && React.createElement(
-                FormSection,
-                { key: "userInfo", title: "👤 USER INFO" },
-                [
-                    React.createElement(FormRow, {
-                        key: "name",
-                        label: userInfo.globalName || userInfo.username || "Unknown",
-                        subLabel: `@${userInfo.username} • ID: ${userInfo.id}`
-                    }),
-                    relationship && React.createElement(FormRow, {
-                        key: "relationship",
-                        label: `${relationship.emoji} ${relationship.label}`,
-                        subLabel: relationship.isFriend
-                            ? "You are friends with this user"
-                            : relationship.isBlocked
-                                ? "You have blocked this user"
-                                : relationship.hasPendingIncoming
-                                    ? "This user sent you a friend request"
-                                    : relationship.hasPendingOutgoing
-                                        ? "You sent this user a friend request"
-                                        : "You are not friends with this user"
-                    })
-                ]
-            ),
-
-            // Servers - Clickable
-            mutualServers.length > 0 && React.createElement(
-                FormSection,
-                { key: "servers", title: `🏠 MUTUAL SERVERS (${mutualServers.length})` },
-                mutualServers.slice(0, 20).map((guild: any, idx: number) =>
-                    React.createElement(FormRow, {
-                        key: `s-${idx}`,
-                        label: guild.name,
-                        trailing: FormRow.Arrow ? React.createElement(FormRow.Arrow, null) : null,
-                        onPress: () => handleSearchInGuild(guild)
-                    })
-                )
-            ),
-
-            // Loading
-            isSearching && React.createElement(
-                View,
-                { key: "loading", style: { padding: 20, alignItems: 'center' } },
-                [
-                    React.createElement(ActivityIndicator, { key: "spin", size: "large", color: "#5865f2" }),
-                    React.createElement(Text, {
-                        key: "txt",
-                        style: { color: '#b5bac1', marginTop: 10 }
-                    }, searchProgress)
-                ]
-            ),
-
-            // Messages - Clickable
-            !isSearching && results.length > 0 && React.createElement(
-                FormSection,
-                { key: "msgs", title: `💬 MESSAGES (${results.length})` },
-                results.map((msg: any, idx: number) =>
-                    React.createElement(
-                        TouchableOpacity,
-                        {
-                            key: `m-${idx}`,
-                            style: {
-                                padding: 12,
-                                borderBottomWidth: 1,
-                                borderBottomColor: '#3f4147',
-                                backgroundColor: '#2b2d31'
-                            },
-                            onPress: () => handleMessageTap(msg),
-                            activeOpacity: 0.7
-                        },
-                        [
-                            React.createElement(Text, {
-                                key: "ch",
-                                style: { color: '#5865f2', fontSize: 12, marginBottom: 2 }
-                            }, `#${getChannelName(msg.channelId)} • ${getGuildName(msg.guildId)}`),
-                            React.createElement(Text, {
-                                key: "ct",
-                                style: { color: '#f2f3f5', fontSize: 14, marginBottom: 4 }
-                            }, msg.content.length > 150 ? msg.content.substring(0, 150) + "..." : msg.content),
-                            React.createElement(Text, {
-                                key: "tm",
-                                style: { color: '#949ba4', fontSize: 11 }
-                            }, formatTime(msg.timestamp) + (msg.attachments > 0 ? ` • 📎${msg.attachments}` : "") + " • Tap to open")
-                        ]
-                    )
-                )
-            ),
-
-            // Debug Info Section
-            React.createElement(
-                FormSection,
-                { key: "debug", title: "🔧 DEBUG INFO" },
-                [
-                    React.createElement(FormRow, {
-                        key: "relStore",
-                        label: "RelationshipStore",
-                        subLabel: RelationshipStore ? "✅ Found" : "❌ Not Found"
-                    }),
-                    React.createElement(FormRow, {
-                        key: "userStore",
-                        label: "UserStore",
-                        subLabel: UserStore ? "✅ Found" : "❌ Not Found"
-                    }),
-                    React.createElement(FormRow, {
-                        key: "profileModule",
-                        label: "Profile Module",
-                        subLabel: UserProfileModule ? "✅ Found" : "❌ Not Found"
-                    }),
-                    React.createElement(FormRow, {
-                        key: "profileInjection",
-                        label: "Profile Injection",
-                        subLabel: profileInjectionStatus
-                    })
-                ]
-            ),
-
-            // Instructions
-            !isSearching && results.length === 0 && React.createElement(
-                FormSection,
-                { key: "help", title: "ℹ️ HOW TO USE" },
-                [
-                    React.createElement(FormRow, {
-                        key: "h0",
-                        label: "📱 Quick Access",
-                        subLabel: "Tap any user → scroll down → Stalker Pro section"
-                    }),
-                    React.createElement(FormRow, {
-                        key: "h1",
-                        label: "1. Get User ID",
-                        subLabel: "Long-press user → Copy ID (enable Developer Mode)"
-                    }),
-                    React.createElement(FormRow, {
-                        key: "h2",
-                        label: "2. Search",
-                        subLabel: "Paste ID and tap Search All Servers"
-                    }),
-                    React.createElement(FormRow, {
-                        key: "h3",
-                        label: "3. View Results",
-                        subLabel: "See friend status, mutual servers & messages"
-                    })
-                ]
-            )
-        ]
-    );
+    return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
+        React.createElement(FormSection, { key: "search", title: "🔍 USER SEARCH" }, [
+            React.createElement(FormInput, { key: "in", title: "User ID", placeholder: "Enter Discord User ID", value: userId, onChangeText: setUserId, keyboardType: "numeric" }),
+            React.createElement(FormRow, { key: "btn", label: isSearching ? "⏳ Searching..." : "🔍 Search All Servers", subLabel: isSearching ? searchProgress : "Find messages", onPress: isSearching ? undefined : handleSearch })
+        ]),
+        userInfo && React.createElement(FormSection, { key: "user", title: "👤 USER" }, [
+            React.createElement(FormRow, { key: "n", label: userInfo.globalName || userInfo.username, subLabel: `@${userInfo.username} • ${userInfo.id}` }),
+            relationship && React.createElement(FormRow, { key: "r", label: `${relationship.emoji} ${relationship.label}`, subLabel: relationship.isFriend ? "You are friends" : "Not friends" })
+        ]),
+        mutualServers.length > 0 && React.createElement(FormSection, { key: "srv", title: `🏠 SERVERS (${mutualServers.length})` },
+            mutualServers.slice(0, 15).map((g: any, i: number) => React.createElement(FormRow, { key: `s${i}`, label: g.name }))
+        ),
+        isSearching && React.createElement(View, { key: "load", style: { padding: 20, alignItems: 'center' } }, [
+            React.createElement(ActivityIndicator, { key: "sp", size: "large", color: "#5865f2" }),
+            React.createElement(Text, { key: "t", style: { color: '#b5bac1', marginTop: 10 } }, searchProgress)
+        ]),
+        !isSearching && results.length > 0 && React.createElement(FormSection, { key: "msgs", title: `💬 MESSAGES (${results.length})` },
+            results.map((msg: any, i: number) => React.createElement(TouchableOpacity, {
+                key: `m${i}`, style: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#3f4147', backgroundColor: '#2b2d31' },
+                onPress: () => { showToast("Opening...", getAssetIDByName("Check")); openMessageLink(msg.guildId, msg.channelId, msg.id); }
+            }, [
+                React.createElement(Text, { key: "c", style: { color: '#5865f2', fontSize: 12 } }, `#${getChannelName(msg.channelId)} • ${getGuildName(msg.guildId)}`),
+                React.createElement(Text, { key: "m", style: { color: '#f2f3f5', fontSize: 14, marginVertical: 3 } }, msg.content.substring(0, 120)),
+                React.createElement(Text, { key: "t", style: { color: '#949ba4', fontSize: 11 } }, formatTime(msg.timestamp) + " • Tap to open")
+            ]))
+        ),
+        React.createElement(FormSection, { key: "dbg", title: "🔧 DEBUG" }, [
+            React.createElement(FormRow, { key: "d1", label: "RelationshipStore", subLabel: RelationshipStore ? "✅" : "❌" }),
+            React.createElement(FormRow, { key: "d2", label: "Profile Injection", subLabel: profileInjectionStatus })
+        ]),
+        !isSearching && results.length === 0 && React.createElement(FormSection, { key: "help", title: "ℹ️ HELP" }, [
+            React.createElement(FormRow, { key: "h1", label: "1. Copy User ID", subLabel: "Long-press user → Copy ID" }),
+            React.createElement(FormRow, { key: "h2", label: "2. Paste & Search", subLabel: "Enter ID above and tap Search" })
+        ])
+    ]);
 }
 
 export const settings = StalkerSettings;
 
 export const onLoad = () => {
     logger.log("=== Stalker Pro Loading ===");
-    logger.log("RelationshipStore:", !!RelationshipStore);
-    logger.log("UserProfileModule:", !!UserProfileModule);
-    logger.log("UserProfileSectionModule:", !!UserProfileSectionModule);
 
-    // Log what we found
-    if (UserProfileModule) {
-        logger.log("UserProfileModule keys:", Object.keys(UserProfileModule));
-    }
+    // EXACT approach from StalkerClean - find UserProfileSection by props
+    const UserProfileSection = findByProps("UserProfileSection");
+    logger.log("UserProfileSection module:", !!UserProfileSection);
+    logger.log("Has .default:", !!UserProfileSection?.default);
 
-    // Try to patch profile module
-    let patchSuccess = false;
-
-    // Method 1: Try patching UserProfileSection.default
-    if (UserProfileModule?.default) {
+    if (UserProfileSection && UserProfileSection.default) {
         try {
-            const unpatch = after("default", UserProfileModule, patchProfileSection);
-            patches.push(unpatch);
-            patchSuccess = true;
-            profileInjectionStatus = "✅ Patched (default)";
-            logger.log("Profile patch applied via default!");
-        } catch (e) {
-            logger.error("Failed to patch default:", e);
-        }
-    }
+            const unpatch = after("default", UserProfileSection, (args: any[], res: any) => {
+                try {
+                    const userId = args[0]?.userId;
+                    if (!userId) return res;
 
-    // Method 2: Try patching UserProfileSection directly
-    if (!patchSuccess && UserProfileModule?.UserProfileSection) {
-        try {
-            const unpatch = after("UserProfileSection", UserProfileModule, patchProfileSection);
-            patches.push(unpatch);
-            patchSuccess = true;
-            profileInjectionStatus = "✅ Patched (UserProfileSection)";
-            logger.log("Profile patch applied via UserProfileSection!");
-        } catch (e) {
-            logger.error("Failed to patch UserProfileSection:", e);
-        }
-    }
+                    const currentUser = UserStore?.getCurrentUser?.();
+                    if (currentUser && userId === currentUser.id) return res;
 
-    // Method 3: Try findByName result
-    if (!patchSuccess) {
-        const ByName = findByName("UserProfileSection", false);
-        if (ByName?.default) {
-            try {
-                const unpatch = after("default", ByName, patchProfileSection);
-                patches.push(unpatch);
-                patchSuccess = true;
-                profileInjectionStatus = "✅ Patched (findByName)";
-                logger.log("Profile patch applied via findByName!");
-            } catch (e) {
-                logger.error("Failed to patch findByName result:", e);
+                    // Check if children array exists
+                    if (!res?.props?.children || !Array.isArray(res.props.children)) {
+                        logger.log("Profile: children not array, type:", typeof res?.props?.children);
+                        return res;
+                    }
+
+                    const rel = getRelationship(userId);
+                    const mutualGuilds = getMutualGuilds(userId);
+
+                    const section = React.createElement(FormSection, { key: "stalker-pro", title: "🔍 Stalker Pro" }, [
+                        rel && React.createElement(FormRow, { key: "rel", label: `${rel.emoji} ${rel.label}`, subLabel: rel.isFriend ? "You are friends" : "Not friends" }),
+                        React.createElement(FormDivider, { key: "d1" }),
+                        React.createElement(FormRow, {
+                            key: "search", label: "🔎 Find Messages", subLabel: `${mutualGuilds.length} mutual servers`,
+                            trailing: FormRow.Arrow ? React.createElement(FormRow.Arrow, null) : null,
+                            onPress: () => quickSearchMessages(userId)
+                        }),
+                        React.createElement(FormDivider, { key: "d2" }),
+                        React.createElement(FormRow, {
+                            key: "srv", label: `🏠 ${mutualGuilds.length} Mutual Servers`,
+                            subLabel: mutualGuilds.slice(0, 2).map((g: any) => g.name).join(", ") + (mutualGuilds.length > 2 ? "..." : "")
+                        })
+                    ]);
+
+                    res.props.children.push(section);
+                    logger.log("Profile section injected for user:", userId);
+                } catch (e) {
+                    logger.error("Injection error:", e);
+                }
+                return res;
+            });
+
+            patches.push(unpatch);
+            profileInjectionStatus = "✅ Method 1: UserProfileSection.default";
+            logger.log("Patch applied: UserProfileSection.default");
+        } catch (e) {
+            logger.error("Failed to patch UserProfileSection.default:", e);
+            profileInjectionStatus = "❌ Patch failed (Method 1)";
+        }
+    } else {
+        // Fallback: Try other module names
+        const alternatives = [
+            findByProps("default", "UserProfileSection"),
+            findByProps("UserProfile"),
+            findByProps("ProfileBody"),
+            findByProps("UserProfileBody")
+        ];
+
+        let found = false;
+        for (const mod of alternatives) {
+            if (mod?.default) {
+                try {
+                    const unpatch = after("default", mod, (args: any[], res: any) => {
+                        try {
+                            const userId = args[0]?.userId || args[0]?.user?.id;
+                            if (!userId) return res;
+
+                            const currentUser = UserStore?.getCurrentUser?.();
+                            if (currentUser && userId === currentUser.id) return res;
+
+                            if (!res?.props?.children) return res;
+                            if (!Array.isArray(res.props.children)) res.props.children = [res.props.children];
+
+                            const rel = getRelationship(userId);
+                            const mutualGuilds = getMutualGuilds(userId);
+
+                            res.props.children.push(
+                                React.createElement(FormSection, { key: "stalker-pro", title: "🔍 Stalker Pro" }, [
+                                    rel && React.createElement(FormRow, { key: "rel", label: `${rel.emoji} ${rel.label}` }),
+                                    React.createElement(FormRow, {
+                                        key: "search", label: "🔎 Find Messages",
+                                        onPress: () => quickSearchMessages(userId)
+                                    })
+                                ])
+                            );
+                        } catch (e) { logger.error("Alt injection error:", e); }
+                        return res;
+                    });
+                    patches.push(unpatch);
+                    found = true;
+                    profileInjectionStatus = "✅ Alt method";
+                    break;
+                } catch (e) { }
             }
         }
-    }
 
-    // Method 4: Try UserProfile (different component name)
-    if (!patchSuccess) {
-        const UserProfile = findByName("UserProfile", false) ||
-            findByDisplayName("UserProfile") ||
-            findByProps("UserProfile")?.UserProfile;
-        if (UserProfile) {
-            try {
-                const target = UserProfile.default ? "default" : "UserProfile";
-                const module = UserProfile.default ? UserProfile : { UserProfile };
-                const unpatch = after(target, module, patchProfileSection);
-                patches.push(unpatch);
-                patchSuccess = true;
-                profileInjectionStatus = "✅ Patched (UserProfile)";
-                logger.log("Profile patch applied via UserProfile!");
-            } catch (e) {
-                logger.error("Failed to patch UserProfile:", e);
-            }
+        if (!found) {
+            profileInjectionStatus = "❌ No module found";
+            logger.warn("Could not find any profile module to patch");
         }
-    }
-
-    if (!patchSuccess) {
-        profileInjectionStatus = "❌ No compatible module found";
-        logger.warn("Could not find profile module to patch");
     }
 
     showToast("Stalker Pro ready!", getAssetIDByName("Check"));
 };
 
-function patchProfileSection(args: any[], res: any) {
-    try {
-        // Get userId from props
-        const userId = args[0]?.userId || args[0]?.user?.id;
-        if (!userId) return res;
-
-        // Don't show for current user
-        const currentUser = UserStore?.getCurrentUser?.();
-        if (currentUser && userId === currentUser.id) return res;
-
-        // Check if we can inject
-        if (!res?.props?.children) {
-            return res;
-        }
-
-        // Make sure children is an array
-        if (!Array.isArray(res.props.children)) {
-            res.props.children = [res.props.children];
-        }
-
-        // Get relationship and mutual guilds
-        const rel = getRelationship(userId);
-        const mutualGuilds = getMutualGuilds(userId);
-
-        // Create Stalker Pro section
-        const stalkerSection = React.createElement(
-            FormSection,
-            { key: "stalker-pro", title: "🔍 Stalker Pro" },
-            [
-                // Relationship status row
-                rel && React.createElement(FormRow, {
-                    key: "relationship",
-                    label: `${rel.emoji} ${rel.label}`,
-                    subLabel: rel.isFriend ? "You are friends" : "Not friends"
-                }),
-                React.createElement(FormDivider, { key: "div1" }),
-                // Recent messages button
-                React.createElement(FormRow, {
-                    key: "recent",
-                    label: "🔎 Find Recent Messages",
-                    subLabel: `Search across ${mutualGuilds.length} mutual servers`,
-                    trailing: FormRow.Arrow ? React.createElement(FormRow.Arrow, null) : null,
-                    onPress: () => quickSearchMessages(userId)
-                }),
-                React.createElement(FormDivider, { key: "div2" }),
-                // Mutual servers info
-                React.createElement(FormRow, {
-                    key: "servers",
-                    label: `🏠 ${mutualGuilds.length} Mutual Servers`,
-                    subLabel: mutualGuilds.slice(0, 3).map((g: any) => g.name).join(", ") +
-                        (mutualGuilds.length > 3 ? "..." : "")
-                })
-            ]
-        );
-
-        // Inject the section
-        res.props.children.push(stalkerSection);
-
-    } catch (e) {
-        logger.error("Error injecting profile section:", e);
-    }
-
-    return res;
-}
-
 export const onUnload = () => {
     logger.log("Stalker Pro unloading...");
-
-    // Unpatch all patches
-    for (const unpatch of patches) {
-        try {
-            unpatch();
-        } catch (e) {
-            logger.error("Error unpatching:", e);
-        }
-    }
+    patches.forEach(p => { try { p(); } catch { } });
     patches = [];
-
-    logger.log("Stalker Pro unloaded");
 };
