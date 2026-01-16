@@ -4,19 +4,18 @@ import { React, ReactNative, FluxDispatcher } from "@vendetta/metro/common";
 import { Forms, General } from "@vendetta/ui/components";
 import { getAssetIDByName } from "@vendetta/ui/assets";
 import { showToast } from "@vendetta/ui/toasts";
-import { after } from "@vendetta/patcher";
 
-const { FormSection, FormRow, FormInput, FormDivider } = Forms;
-const { ScrollView, View, Text, TouchableOpacity, ActivityIndicator, Linking } = General;
+const { FormSection, FormRow, FormInput } = Forms;
+const { ScrollView, View, Text, TouchableOpacity, ActivityIndicator, Clipboard } = General;
 
-const URLOpener = Linking || ReactNative?.Linking;
+// Get Clipboard from ReactNative if not in General
+const ClipboardAPI = Clipboard || ReactNative?.Clipboard || findByProps("getString", "setString");
 
 // Discord stores
 const UserStore = findByStoreName("UserStore");
 const GuildStore = findByStoreName("GuildStore");
 const GuildMemberStore = findByStoreName("GuildMemberStore");
 const ChannelStore = findByStoreName("ChannelStore");
-const RelationshipStore = findByStoreName("RelationshipStore");
 
 // REST API
 const RestAPI = findByProps("getAPIBaseURL", "get") || findByProps("API_HOST", "get");
@@ -24,26 +23,13 @@ const RestAPI = findByProps("getAPIBaseURL", "get") || findByProps("API_HOST", "
 // Navigation
 const Router = findByProps("transitionToGuild", "transitionTo") || findByProps("transitionTo");
 const MessageActions = findByProps("jumpToMessage");
+const URLOpener = findByProps("openURL") || ReactNative?.Linking;
 
-// Store patches - use array for multiple patches
-let patches: Function[] = [];
+// Storage for tracking
+let lastClipboardContent = "";
+let clipboardCheckInterval: any = null;
+let detectedUserId: string | null = null;
 let targetUserId: string = "";
-let profileInjectionStatus = "Not attempted";
-
-const RelationshipTypes = { NONE: 0, FRIEND: 1, BLOCKED: 2, PENDING_INCOMING: 3, PENDING_OUTGOING: 4 };
-
-function getRelationship(userId: string) {
-    if (!RelationshipStore) return null;
-    try {
-        const type = RelationshipStore.getRelationshipType?.(userId) ?? 0;
-        return {
-            type,
-            isFriend: type === 1,
-            emoji: type === 1 ? "✅" : type === 2 ? "🚫" : type === 3 ? "📨" : type === 4 ? "📤" : "❌",
-            label: type === 1 ? "Friend" : type === 2 ? "Blocked" : type === 3 ? "Pending In" : type === 4 ? "Pending Out" : "Not Friends"
-        };
-    } catch { return null; }
-}
 
 function getMutualGuilds(userId: string) {
     if (!GuildStore || !GuildMemberStore) return [];
@@ -67,28 +53,6 @@ async function searchMessagesInGuild(guildId: string, authorId: string): Promise
     } catch { return []; }
 }
 
-async function quickSearchMessages(userId: string) {
-    const guilds = getMutualGuilds(userId);
-    if (guilds.length === 0) { showToast("No mutual servers", getAssetIDByName("Small")); return; }
-
-    showToast(`Searching ${guilds.length} servers...`, getAssetIDByName("ic_search"));
-    let allMsgs: any[] = [];
-
-    for (let i = 0; i < Math.min(guilds.length, 8); i++) {
-        const msgs = await searchMessagesInGuild(guilds[i].id, userId);
-        allMsgs.push(...msgs);
-        if (i < guilds.length - 1) await new Promise(r => setTimeout(r, 250));
-    }
-
-    allMsgs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-    showToast(`Found ${allMsgs.length} messages!`, getAssetIDByName("Check"));
-
-    if (allMsgs.length > 0) {
-        const latest = allMsgs[0].content.substring(0, 35);
-        setTimeout(() => showToast(`Latest: "${latest}..."`, getAssetIDByName("ic_message")), 1200);
-    }
-}
-
 function getChannelName(id: string) { return ChannelStore?.getChannel(id)?.name || "unknown"; }
 function getGuildName(id: string) { return GuildStore?.getGuild(id)?.name || "Unknown"; }
 function getUserInfo(id: string) {
@@ -97,19 +61,125 @@ function getUserInfo(id: string) {
 }
 
 function openMessageLink(guildId: string, channelId: string, messageId: string) {
-    try {
-        FluxDispatcher?.dispatch({ type: "NAVIGATE_TO_JUMP_TO_MESSAGE", messageId, channelId, guildId });
-        return true;
-    } catch { }
-    try {
-        MessageActions?.jumpToMessage({ channelId, messageId, flash: true });
-        return true;
-    } catch { }
-    try {
-        URLOpener?.openURL(`discord://-/channels/${guildId}/${channelId}/${messageId}`);
-        return true;
-    } catch { }
+    try { FluxDispatcher?.dispatch({ type: "NAVIGATE_TO_JUMP_TO_MESSAGE", messageId, channelId, guildId }); return true; } catch { }
+    try { MessageActions?.jumpToMessage({ channelId, messageId, flash: true }); return true; } catch { }
+    try { URLOpener?.openURL?.(`discord://-/channels/${guildId}/${channelId}/${messageId}`); return true; } catch { }
     return false;
+}
+
+// Check if string is a Discord User ID (17-19 digits)
+function isUserIdFormat(text: string): boolean {
+    const trimmed = text.trim();
+    return /^\d{17,19}$/.test(trimmed);
+}
+
+// Start searching for a user
+async function searchUser(userId: string) {
+    const guilds = getMutualGuilds(userId);
+    const userInfo = getUserInfo(userId);
+
+    if (guilds.length === 0) {
+        showToast("No mutual servers found", getAssetIDByName("Small"));
+        return;
+    }
+
+    const displayName = userInfo?.globalName || userInfo?.username || userId;
+    showToast(`🔍 Searching for ${displayName}...`, getAssetIDByName("ic_search"));
+
+    let allMsgs: any[] = [];
+
+    for (let i = 0; i < Math.min(guilds.length, 10); i++) {
+        try {
+            const msgs = await searchMessagesInGuild(guilds[i].id, userId);
+            allMsgs.push(...msgs);
+        } catch { }
+        if (i < guilds.length - 1) await new Promise(r => setTimeout(r, 300));
+    }
+
+    allMsgs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+    if (allMsgs.length === 0) {
+        showToast(`No messages found in ${guilds.length} servers`, getAssetIDByName("Small"));
+        return;
+    }
+
+    showToast(`✅ Found ${allMsgs.length} messages!`, getAssetIDByName("Check"));
+
+    // Show latest message after a delay
+    setTimeout(() => {
+        const latest = allMsgs[0];
+        const content = latest.content.length > 30 ? latest.content.substring(0, 30) + "..." : latest.content;
+        const channel = getChannelName(latest.channelId);
+        const guild = getGuildName(latest.guildId);
+        showToast(`📍 #${channel} in ${guild}`, getAssetIDByName("ic_message"));
+
+        // Store for potential navigation
+        detectedUserId = userId;
+    }, 1500);
+
+    // Show another toast to open
+    setTimeout(() => {
+        if (allMsgs.length > 0) {
+            const latest = allMsgs[0];
+            showToast(`👆 Tap here to open latest message`, getAssetIDByName("Arrow"));
+
+            // Auto-open after showing the toast
+            setTimeout(() => {
+                openMessageLink(latest.guildId, latest.channelId, latest.id);
+            }, 2000);
+        }
+    }, 3500);
+}
+
+// Check clipboard for User ID
+async function checkClipboard() {
+    try {
+        if (!ClipboardAPI?.getString) return;
+
+        const content = await ClipboardAPI.getString();
+
+        if (content && content !== lastClipboardContent) {
+            lastClipboardContent = content;
+
+            if (isUserIdFormat(content)) {
+                const userId = content.trim();
+                logger.log("User ID detected in clipboard:", userId);
+
+                // Check if it's the current user
+                const currentUser = UserStore?.getCurrentUser?.();
+                if (currentUser && userId === currentUser.id) {
+                    return; // Don't stalk yourself
+                }
+
+                // Get user info if available
+                const userInfo = getUserInfo(userId);
+                const guilds = getMutualGuilds(userId);
+
+                if (userInfo) {
+                    const name = userInfo.globalName || userInfo.username;
+                    showToast(`🎯 ${name} copied! Tap to search...`, getAssetIDByName("ic_search"));
+                } else if (guilds.length > 0) {
+                    showToast(`🎯 User ID copied! Tap to search...`, getAssetIDByName("ic_search"));
+                } else {
+                    showToast(`🎯 User ID copied (no mutual servers)`, getAssetIDByName("Small"));
+                    return;
+                }
+
+                // Store detected ID
+                detectedUserId = userId;
+
+                // Wait a moment then offer to search
+                setTimeout(() => {
+                    if (detectedUserId === userId) {
+                        showToast(`🔎 Searching ${guilds.length} servers...`, getAssetIDByName("ic_search"));
+                        searchUser(userId);
+                    }
+                }, 2000);
+            }
+        }
+    } catch (e) {
+        logger.error("Clipboard check error:", e);
+    }
 }
 
 // Settings Component
@@ -117,7 +187,6 @@ function StalkerSettings() {
     const [userId, setUserId] = React.useState(targetUserId);
     const [results, setResults] = React.useState<any[]>([]);
     const [userInfo, setUserInfo] = React.useState<any>(null);
-    const [relationship, setRelationship] = React.useState<any>(null);
     const [mutualServers, setMutualServers] = React.useState<any[]>([]);
     const [isSearching, setIsSearching] = React.useState(false);
     const [searchProgress, setSearchProgress] = React.useState("");
@@ -127,7 +196,6 @@ function StalkerSettings() {
         setIsSearching(true); setResults([]); targetUserId = userId;
 
         const info = getUserInfo(userId); setUserInfo(info);
-        const rel = getRelationship(userId); setRelationship(rel);
         const guilds = getMutualGuilds(userId); setMutualServers(guilds);
 
         if (guilds.length === 0) { showToast("No mutual servers", getAssetIDByName("Small")); setIsSearching(false); return; }
@@ -151,21 +219,43 @@ function StalkerSettings() {
     };
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
-        React.createElement(FormSection, { key: "search", title: "🔍 USER SEARCH" }, [
+        // Quick Access Info
+        React.createElement(FormSection, { key: "quick", title: "⚡ QUICK ACCESS" }, [
+            React.createElement(FormRow, {
+                key: "info",
+                label: "Copy any User ID",
+                subLabel: "Plugin auto-detects and searches!"
+            }),
+            React.createElement(FormRow, {
+                key: "how",
+                label: "How to use",
+                subLabel: "Long-press user → Copy ID → Wait for search"
+            })
+        ]),
+
+        // Manual Search
+        React.createElement(FormSection, { key: "search", title: "🔍 MANUAL SEARCH" }, [
             React.createElement(FormInput, { key: "in", title: "User ID", placeholder: "Enter Discord User ID", value: userId, onChangeText: setUserId, keyboardType: "numeric" }),
             React.createElement(FormRow, { key: "btn", label: isSearching ? "⏳ Searching..." : "🔍 Search All Servers", subLabel: isSearching ? searchProgress : "Find messages", onPress: isSearching ? undefined : handleSearch })
         ]),
+
+        // User Info
         userInfo && React.createElement(FormSection, { key: "user", title: "👤 USER" }, [
-            React.createElement(FormRow, { key: "n", label: userInfo.globalName || userInfo.username, subLabel: `@${userInfo.username} • ${userInfo.id}` }),
-            relationship && React.createElement(FormRow, { key: "r", label: `${relationship.emoji} ${relationship.label}`, subLabel: relationship.isFriend ? "You are friends" : "Not friends" })
+            React.createElement(FormRow, { key: "n", label: userInfo.globalName || userInfo.username, subLabel: `@${userInfo.username} • ${userInfo.id}` })
         ]),
+
+        // Servers
         mutualServers.length > 0 && React.createElement(FormSection, { key: "srv", title: `🏠 SERVERS (${mutualServers.length})` },
             mutualServers.slice(0, 15).map((g: any, i: number) => React.createElement(FormRow, { key: `s${i}`, label: g.name }))
         ),
+
+        // Loading
         isSearching && React.createElement(View, { key: "load", style: { padding: 20, alignItems: 'center' } }, [
             React.createElement(ActivityIndicator, { key: "sp", size: "large", color: "#5865f2" }),
             React.createElement(Text, { key: "t", style: { color: '#b5bac1', marginTop: 10 } }, searchProgress)
         ]),
+
+        // Messages
         !isSearching && results.length > 0 && React.createElement(FormSection, { key: "msgs", title: `💬 MESSAGES (${results.length})` },
             results.map((msg: any, i: number) => React.createElement(TouchableOpacity, {
                 key: `m${i}`, style: { padding: 12, borderBottomWidth: 1, borderBottomColor: '#3f4147', backgroundColor: '#2b2d31' },
@@ -176,13 +266,11 @@ function StalkerSettings() {
                 React.createElement(Text, { key: "t", style: { color: '#949ba4', fontSize: 11 } }, formatTime(msg.timestamp) + " • Tap to open")
             ]))
         ),
-        React.createElement(FormSection, { key: "dbg", title: "🔧 DEBUG" }, [
-            React.createElement(FormRow, { key: "d1", label: "RelationshipStore", subLabel: RelationshipStore ? "✅" : "❌" }),
-            React.createElement(FormRow, { key: "d2", label: "Profile Injection", subLabel: profileInjectionStatus })
-        ]),
-        !isSearching && results.length === 0 && React.createElement(FormSection, { key: "help", title: "ℹ️ HELP" }, [
-            React.createElement(FormRow, { key: "h1", label: "1. Copy User ID", subLabel: "Long-press user → Copy ID" }),
-            React.createElement(FormRow, { key: "h2", label: "2. Paste & Search", subLabel: "Enter ID above and tap Search" })
+
+        // Debug
+        React.createElement(FormSection, { key: "dbg", title: "🔧 STATUS" }, [
+            React.createElement(FormRow, { key: "d1", label: "Clipboard Monitor", subLabel: clipboardCheckInterval ? "✅ Active" : "❌ Inactive" }),
+            React.createElement(FormRow, { key: "d2", label: "Last Detected ID", subLabel: detectedUserId || "None" })
         ])
     ]);
 }
@@ -191,119 +279,27 @@ export const settings = StalkerSettings;
 
 export const onLoad = () => {
     logger.log("=== Stalker Pro Loading ===");
+    logger.log("ClipboardAPI available:", !!ClipboardAPI?.getString);
 
-    // EXACT approach from StalkerClean - find UserProfileSection by props
-    const UserProfileSection = findByProps("UserProfileSection");
-    logger.log("UserProfileSection module:", !!UserProfileSection);
-    logger.log("Has .default:", !!UserProfileSection?.default);
-
-    if (UserProfileSection && UserProfileSection.default) {
-        try {
-            const unpatch = after("default", UserProfileSection, (args: any[], res: any) => {
-                try {
-                    const userId = args[0]?.userId;
-                    if (!userId) return res;
-
-                    const currentUser = UserStore?.getCurrentUser?.();
-                    if (currentUser && userId === currentUser.id) return res;
-
-                    // Check if children array exists
-                    if (!res?.props?.children || !Array.isArray(res.props.children)) {
-                        logger.log("Profile: children not array, type:", typeof res?.props?.children);
-                        return res;
-                    }
-
-                    const rel = getRelationship(userId);
-                    const mutualGuilds = getMutualGuilds(userId);
-
-                    const section = React.createElement(FormSection, { key: "stalker-pro", title: "🔍 Stalker Pro" }, [
-                        rel && React.createElement(FormRow, { key: "rel", label: `${rel.emoji} ${rel.label}`, subLabel: rel.isFriend ? "You are friends" : "Not friends" }),
-                        React.createElement(FormDivider, { key: "d1" }),
-                        React.createElement(FormRow, {
-                            key: "search", label: "🔎 Find Messages", subLabel: `${mutualGuilds.length} mutual servers`,
-                            trailing: FormRow.Arrow ? React.createElement(FormRow.Arrow, null) : null,
-                            onPress: () => quickSearchMessages(userId)
-                        }),
-                        React.createElement(FormDivider, { key: "d2" }),
-                        React.createElement(FormRow, {
-                            key: "srv", label: `🏠 ${mutualGuilds.length} Mutual Servers`,
-                            subLabel: mutualGuilds.slice(0, 2).map((g: any) => g.name).join(", ") + (mutualGuilds.length > 2 ? "..." : "")
-                        })
-                    ]);
-
-                    res.props.children.push(section);
-                    logger.log("Profile section injected for user:", userId);
-                } catch (e) {
-                    logger.error("Injection error:", e);
-                }
-                return res;
-            });
-
-            patches.push(unpatch);
-            profileInjectionStatus = "✅ Method 1: UserProfileSection.default";
-            logger.log("Patch applied: UserProfileSection.default");
-        } catch (e) {
-            logger.error("Failed to patch UserProfileSection.default:", e);
-            profileInjectionStatus = "❌ Patch failed (Method 1)";
-        }
+    // Start clipboard monitoring
+    if (ClipboardAPI?.getString) {
+        // Check clipboard every 1.5 seconds
+        clipboardCheckInterval = setInterval(checkClipboard, 1500);
+        logger.log("Clipboard monitoring started");
+        showToast("🔍 Stalker Pro ready! Copy a User ID to search", getAssetIDByName("Check"));
     } else {
-        // Fallback: Try other module names
-        const alternatives = [
-            findByProps("default", "UserProfileSection"),
-            findByProps("UserProfile"),
-            findByProps("ProfileBody"),
-            findByProps("UserProfileBody")
-        ];
-
-        let found = false;
-        for (const mod of alternatives) {
-            if (mod?.default) {
-                try {
-                    const unpatch = after("default", mod, (args: any[], res: any) => {
-                        try {
-                            const userId = args[0]?.userId || args[0]?.user?.id;
-                            if (!userId) return res;
-
-                            const currentUser = UserStore?.getCurrentUser?.();
-                            if (currentUser && userId === currentUser.id) return res;
-
-                            if (!res?.props?.children) return res;
-                            if (!Array.isArray(res.props.children)) res.props.children = [res.props.children];
-
-                            const rel = getRelationship(userId);
-                            const mutualGuilds = getMutualGuilds(userId);
-
-                            res.props.children.push(
-                                React.createElement(FormSection, { key: "stalker-pro", title: "🔍 Stalker Pro" }, [
-                                    rel && React.createElement(FormRow, { key: "rel", label: `${rel.emoji} ${rel.label}` }),
-                                    React.createElement(FormRow, {
-                                        key: "search", label: "🔎 Find Messages",
-                                        onPress: () => quickSearchMessages(userId)
-                                    })
-                                ])
-                            );
-                        } catch (e) { logger.error("Alt injection error:", e); }
-                        return res;
-                    });
-                    patches.push(unpatch);
-                    found = true;
-                    profileInjectionStatus = "✅ Alt method";
-                    break;
-                } catch (e) { }
-            }
-        }
-
-        if (!found) {
-            profileInjectionStatus = "❌ No module found";
-            logger.warn("Could not find any profile module to patch");
-        }
+        logger.warn("Clipboard API not available");
+        showToast("Stalker Pro ready (manual mode)", getAssetIDByName("Check"));
     }
-
-    showToast("Stalker Pro ready!", getAssetIDByName("Check"));
 };
 
 export const onUnload = () => {
     logger.log("Stalker Pro unloading...");
-    patches.forEach(p => { try { p(); } catch { } });
-    patches = [];
+
+    // Stop clipboard monitoring
+    if (clipboardCheckInterval) {
+        clearInterval(clipboardCheckInterval);
+        clipboardCheckInterval = null;
+        logger.log("Clipboard monitoring stopped");
+    }
 };
