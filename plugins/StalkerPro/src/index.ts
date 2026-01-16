@@ -62,11 +62,111 @@ function getUserInfo(id: string) {
 }
 
 function openMessageLink(guildId: string, channelId: string, messageId: string) {
-    try { FluxDispatcher?.dispatch({ type: "NAVIGATE_TO_JUMP_TO_MESSAGE", messageId, channelId, guildId }); return true; } catch { }
-    try { MessageActions?.jumpToMessage({ channelId, messageId, flash: true }); return true; } catch { }
-    try { URLOpener?.openURL?.(`discord://-/channels/${guildId}/${channelId}/${messageId}`); return true; } catch { }
+    logger.log(`=== NAVIGATING TO MESSAGE ===`);
+    logger.log(`Guild: ${guildId}, Channel: ${channelId}, Message: ${messageId}`);
+
+    // Method 1: Try selecting channel first, then jumping
+    try {
+        const ChannelSelectActions = findByProps("selectChannel", "selectVoiceChannel");
+        if (ChannelSelectActions?.selectChannel) {
+            ChannelSelectActions.selectChannel({ channelId, guildId });
+            logger.log("Method 1: selectChannel dispatched");
+
+            // Then try to jump to message after a delay
+            setTimeout(() => {
+                try {
+                    if (MessageActions?.jumpToMessage) {
+                        MessageActions.jumpToMessage({ channelId, messageId, flash: true });
+                        logger.log("Method 1b: jumpToMessage after selectChannel");
+                    }
+                } catch (e) { logger.log("jumpToMessage failed:", e); }
+            }, 500);
+            return true;
+        }
+    } catch (e) { logger.log("Method 1 failed:", e); }
+
+    // Method 2: Direct FluxDispatcher - CHANNEL_SELECT then MESSAGE_JUMP
+    try {
+        if (FluxDispatcher) {
+            FluxDispatcher.dispatch({
+                type: "CHANNEL_SELECT",
+                channelId: channelId,
+                guildId: guildId
+            });
+            logger.log("Method 2a: CHANNEL_SELECT dispatched");
+
+            setTimeout(() => {
+                FluxDispatcher.dispatch({
+                    type: "LOAD_MESSAGES_AROUND",
+                    channelId: channelId,
+                    messageId: messageId,
+                    limit: 25
+                });
+                FluxDispatcher.dispatch({
+                    type: "MESSAGE_HIGHLIGHT",
+                    messageId: messageId,
+                    channelId: channelId
+                });
+                logger.log("Method 2b: LOAD_MESSAGES_AROUND + MESSAGE_HIGHLIGHT dispatched");
+            }, 300);
+            return true;
+        }
+    } catch (e) { logger.log("Method 2 failed:", e); }
+
+    // Method 3: MessageActions jumpToMessage directly
+    try {
+        if (MessageActions?.jumpToMessage) {
+            MessageActions.jumpToMessage({
+                channelId: channelId,
+                messageId: messageId,
+                flash: true,
+                jumpType: "INSTANT"
+            });
+            logger.log("Method 3: jumpToMessage direct");
+            return true;
+        }
+    } catch (e) { logger.log("Method 3 failed:", e); }
+
+    // Method 4: Try transitionToGuild
+    try {
+        const Router = findByProps("transitionToGuild");
+        if (Router?.transitionToGuild) {
+            Router.transitionToGuild(guildId, channelId, messageId);
+            logger.log("Method 4: transitionToGuild");
+            return true;
+        }
+    } catch (e) { logger.log("Method 4 failed:", e); }
+
+    // Method 5: Open discord:// deep link (should work on mobile!)
+    try {
+        const deepLink = `discord://discord.com/channels/${guildId}/${channelId}/${messageId}`;
+        logger.log("Method 5: Trying deep link:", deepLink);
+
+        const Linking = ReactNative?.Linking || findByProps("openURL", "canOpenURL");
+        if (Linking?.openURL) {
+            Linking.openURL(deepLink);
+            logger.log("Method 5: openURL called");
+            return true;
+        }
+    } catch (e) { logger.log("Method 5 failed:", e); }
+
+    // Method 6: Open https URL (fallback - opens in browser/Discord)
+    try {
+        const httpsLink = `https://discord.com/channels/${guildId}/${channelId}/${messageId}`;
+        logger.log("Method 6: Trying HTTPS link:", httpsLink);
+
+        const Linking = ReactNative?.Linking || findByProps("openURL");
+        if (Linking?.openURL) {
+            Linking.openURL(httpsLink);
+            logger.log("Method 6: HTTPS openURL called");
+            return true;
+        }
+    } catch (e) { logger.log("Method 6 failed:", e); }
+
+    logger.log("All navigation methods failed!");
     return false;
 }
+
 
 function isUserIdFormat(text: string): boolean {
     if (!text) return false;
