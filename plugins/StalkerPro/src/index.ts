@@ -1,11 +1,19 @@
 import { logger } from "@vendetta";
 import { findByStoreName, findByProps } from "@vendetta/metro";
-import { React, ReactNative, FluxDispatcher } from "@vendetta/metro/common";
+import { React, ReactNative, FluxDispatcher, NavigationNative } from "@vendetta/metro/common";
 import { Forms, General } from "@vendetta/ui/components";
 import { getAssetIDByName } from "@vendetta/ui/assets";
 import { showToast } from "@vendetta/ui/toasts";
 
-const { FormSection, FormRow, FormInput } = Forms;
+// Try to import commands API (may not be available in all versions)
+let commands: any;
+try {
+    commands = require("@vendetta/commands");
+} catch (e) {
+    logger.log("Commands API not available");
+}
+
+const { FormSection, FormRow, FormInput, FormDivider } = Forms;
 const { ScrollView, View, Text, TouchableOpacity, ActivityIndicator, Linking } = General;
 
 // Also try to get Linking from ReactNative if not in General
@@ -16,6 +24,7 @@ const UserStore = findByStoreName("UserStore");
 const GuildStore = findByStoreName("GuildStore");
 const GuildMemberStore = findByStoreName("GuildMemberStore");
 const ChannelStore = findByStoreName("ChannelStore");
+const RelationshipStore = findByStoreName("RelationshipStore");
 
 // REST API for fetching messages
 const RestAPI = findByProps("getAPIBaseURL", "get") || findByProps("API_HOST", "get");
@@ -30,8 +39,74 @@ const Router = findByProps("transitionToGuild", "transitionTo") ||
 const MessageActions = findByProps("jumpToMessage") ||
     findByProps("fetchMessages", "jumpToMessage");
 
+// Channel selector for navigating to channel first
+const ChannelActions = findByProps("selectChannel") ||
+    findByProps("selectVoiceChannel", "selectChannel");
+
 // Store the target user ID
 let targetUserId: string = "";
+
+// Store command unregister function
+let unregisterCommand: (() => void) | null = null;
+
+// Relationship type constants
+const RelationshipTypes = {
+    NONE: 0,
+    FRIEND: 1,
+    BLOCKED: 2,
+    PENDING_INCOMING: 3,
+    PENDING_OUTGOING: 4,
+    IMPLICIT: 5
+};
+
+/**
+ * Get relationship status with a user
+ */
+function getRelationship(userId: string) {
+    try {
+        if (!RelationshipStore) {
+            logger.warn("RelationshipStore not found");
+            return null;
+        }
+
+        const type = RelationshipStore.getRelationshipType?.(userId) ??
+            RelationshipStore.getRelationship?.(userId)?.type ??
+            RelationshipTypes.NONE;
+
+        return {
+            type: type,
+            isFriend: type === RelationshipTypes.FRIEND,
+            isBlocked: type === RelationshipTypes.BLOCKED,
+            hasPendingIncoming: type === RelationshipTypes.PENDING_INCOMING,
+            hasPendingOutgoing: type === RelationshipTypes.PENDING_OUTGOING,
+            label: getRelationshipLabel(type),
+            emoji: getRelationshipEmoji(type)
+        };
+    } catch (e) {
+        logger.error("Error getting relationship:", e);
+        return null;
+    }
+}
+
+function getRelationshipLabel(type: number): string {
+    switch (type) {
+        case RelationshipTypes.FRIEND: return "Friend";
+        case RelationshipTypes.BLOCKED: return "Blocked";
+        case RelationshipTypes.PENDING_INCOMING: return "Pending (Incoming)";
+        case RelationshipTypes.PENDING_OUTGOING: return "Pending (Outgoing)";
+        default: return "Not Friends";
+    }
+}
+
+function getRelationshipEmoji(type: number): string {
+    switch (type) {
+        case RelationshipTypes.FRIEND: return "✅";
+        case RelationshipTypes.BLOCKED: return "🚫";
+        case RelationshipTypes.PENDING_INCOMING: return "📨";
+        case RelationshipTypes.PENDING_OUTGOING: return "📤";
+        default: return "❌";
+    }
+}
 
 /**
  * Get all guilds where both you and the target user are members
@@ -212,7 +287,9 @@ function getUserInfo(userId: string) {
             return {
                 username: user.username,
                 globalName: user.globalName,
-                id: user.id
+                id: user.id,
+                avatar: user.avatar,
+                discriminator: user.discriminator
             };
         }
     } catch (e) {
@@ -226,6 +303,7 @@ function StalkerSettings() {
     const [userId, setUserId] = React.useState(targetUserId);
     const [results, setResults] = React.useState<any[]>([]);
     const [userInfo, setUserInfo] = React.useState<any>(null);
+    const [relationship, setRelationship] = React.useState<any>(null);
     const [mutualServers, setMutualServers] = React.useState<any[]>([]);
     const [isSearching, setIsSearching] = React.useState(false);
     const [searchProgress, setSearchProgress] = React.useState("");
@@ -238,13 +316,20 @@ function StalkerSettings() {
 
         setIsSearching(true);
         setResults([]);
-        setSearchProgress("Finding mutual servers...");
+        setSearchProgress("Finding user info...");
         targetUserId = userId;
 
         try {
+            // Get user info
             const info = getUserInfo(userId);
             setUserInfo(info);
 
+            // Get relationship status - THIS IS THE KEY FIX!
+            const rel = getRelationship(userId);
+            setRelationship(rel);
+            logger.log("Relationship status:", rel);
+
+            setSearchProgress("Finding mutual servers...");
             const guilds = getMutualGuilds(userId);
             setMutualServers(guilds);
 
@@ -355,15 +440,28 @@ function StalkerSettings() {
                 ]
             ),
 
-            // User Info
+            // User Info with Relationship Status - NEW!
             userInfo && React.createElement(
                 FormSection,
-                { key: "userInfo", title: "👤 USER" },
+                { key: "userInfo", title: "👤 USER INFO" },
                 [
                     React.createElement(FormRow, {
                         key: "name",
                         label: userInfo.globalName || userInfo.username || "Unknown",
-                        subLabel: `ID: ${userInfo.id}`
+                        subLabel: `@${userInfo.username} • ID: ${userInfo.id}`
+                    }),
+                    relationship && React.createElement(FormRow, {
+                        key: "relationship",
+                        label: `${relationship.emoji} ${relationship.label}`,
+                        subLabel: relationship.isFriend
+                            ? "You are friends with this user"
+                            : relationship.isBlocked
+                                ? "You have blocked this user"
+                                : relationship.hasPendingIncoming
+                                    ? "This user sent you a friend request"
+                                    : relationship.hasPendingOutgoing
+                                        ? "You sent this user a friend request"
+                                        : "You are not friends with this user"
                     })
                 ]
             ),
@@ -371,7 +469,7 @@ function StalkerSettings() {
             // Servers - Clickable
             mutualServers.length > 0 && React.createElement(
                 FormSection,
-                { key: "servers", title: `🏠 SERVERS (${mutualServers.length})` },
+                { key: "servers", title: `🏠 MUTUAL SERVERS (${mutualServers.length})` },
                 mutualServers.slice(0, 20).map((guild: any, idx: number) =>
                     React.createElement(FormRow, {
                         key: `s-${idx}`,
@@ -431,25 +529,53 @@ function StalkerSettings() {
                 )
             ),
 
+            // Debug Info Section - helpful for troubleshooting
+            React.createElement(
+                FormSection,
+                { key: "debug", title: "🔧 DEBUG INFO" },
+                [
+                    React.createElement(FormRow, {
+                        key: "relStore",
+                        label: "RelationshipStore",
+                        subLabel: RelationshipStore ? "✅ Found" : "❌ Not Found"
+                    }),
+                    React.createElement(FormRow, {
+                        key: "userStore",
+                        label: "UserStore",
+                        subLabel: UserStore ? "✅ Found" : "❌ Not Found"
+                    }),
+                    React.createElement(FormRow, {
+                        key: "cmdApi",
+                        label: "Commands API",
+                        subLabel: commands ? "✅ Available" : "❌ Not Available"
+                    })
+                ]
+            ),
+
             // Instructions
             !isSearching && results.length === 0 && React.createElement(
                 FormSection,
-                { key: "help", title: "ℹ️ HELP" },
+                { key: "help", title: "ℹ️ HOW TO USE" },
                 [
                     React.createElement(FormRow, {
                         key: "h1",
-                        label: "1. Enter User ID",
-                        subLabel: "Long-press user → Copy ID"
+                        label: "1. Get User ID",
+                        subLabel: "Long-press user → Copy ID (enable Developer Mode)"
                     }),
                     React.createElement(FormRow, {
                         key: "h2",
                         label: "2. Search",
-                        subLabel: "Tap a server or Search All"
+                        subLabel: "Paste ID and tap Search All Servers"
                     }),
                     React.createElement(FormRow, {
                         key: "h3",
-                        label: "3. Tap Message",
-                        subLabel: "Opens message in Discord"
+                        label: "3. View Results",
+                        subLabel: "See friend status, mutual servers & messages"
+                    }),
+                    React.createElement(FormRow, {
+                        key: "h4",
+                        label: "4. Tap Message",
+                        subLabel: "Opens message location in Discord"
                     })
                 ]
             )
@@ -461,13 +587,46 @@ export const settings = StalkerSettings;
 
 export const onLoad = () => {
     logger.log("Stalker Pro loaded");
-    logger.log("Router found:", !!Router);
-    logger.log("FluxDispatcher found:", !!FluxDispatcher);
-    logger.log("MessageActions found:", !!MessageActions);
-    logger.log("URLOpener found:", !!URLOpener);
+    logger.log("RelationshipStore found:", !!RelationshipStore);
+    logger.log("UserStore found:", !!UserStore);
+    logger.log("GuildMemberStore found:", !!GuildMemberStore);
+    logger.log("Commands API found:", !!commands);
+
+    // Try to register slash command if available
+    if (commands?.registerCommand) {
+        try {
+            unregisterCommand = commands.registerCommand({
+                name: "stalk",
+                displayName: "stalk",
+                description: "Open Stalker Pro to search for a user",
+                displayDescription: "Open Stalker Pro settings to search for user messages",
+                type: 1,
+                inputType: 1,
+                options: [],
+                execute: async (args: any[], ctx: any) => {
+                    showToast("Open plugin settings to use Stalker Pro", getAssetIDByName("Check"));
+                    return { content: "Open Stalker Pro from plugin settings to search!" };
+                }
+            });
+            logger.log("Stalk command registered");
+        } catch (e) {
+            logger.error("Failed to register command:", e);
+        }
+    }
+
     showToast("Stalker Pro ready!", getAssetIDByName("Check"));
 };
 
 export const onUnload = () => {
     logger.log("Stalker Pro unloaded");
+
+    // Unregister command if it was registered
+    if (unregisterCommand) {
+        try {
+            unregisterCommand();
+            logger.log("Stalk command unregistered");
+        } catch (e) {
+            logger.error("Failed to unregister command:", e);
+        }
+    }
 };
