@@ -1,10 +1,10 @@
 import { logger } from "@vendetta";
-import { findByStoreName, findByProps } from "@vendetta/metro";
-import { React, ReactNative, FluxDispatcher } from "@vendetta/metro/common";
+import { findByStoreName, findByProps, findByName } from "@vendetta/metro";
+import { React, ReactNative, constants } from "@vendetta/metro/common";
 import { Forms, General } from "@vendetta/ui/components";
 import { getAssetIDByName } from "@vendetta/ui/assets";
 import { showToast } from "@vendetta/ui/toasts";
-import { before, after } from "@vendetta/patcher";
+import { after } from "@vendetta/patcher";
 
 const { FormSection, FormRow, FormInput } = Forms;
 const { ScrollView, View, Text, TouchableOpacity } = General;
@@ -15,19 +15,20 @@ const GuildStore = findByStoreName("GuildStore");
 const GuildMemberStore = findByStoreName("GuildMemberStore");
 const ChannelStore = findByStoreName("ChannelStore");
 const SelectedGuildStore = findByStoreName("SelectedGuildStore");
-const PermissionStore = findByStoreName("PermissionStore");
 
-// Get GuildChannelStore for patching
-const GuildChannelStore = findByStoreName("GuildChannelStore");
+// CRITICAL: Get Permissions module - this is what we patch!
+const Permissions = findByProps("getChannelPermissions", "can");
+const { getChannel } = findByProps("getChannel") || {};
+const ChannelTypes = findByProps("ChannelTypes")?.ChannelTypes || {};
 
 // Clipboard
 const Clipboard = ReactNative?.Clipboard || findByProps("setString", "getString");
 
-// REST API  
+// REST API
 const RestAPI = findByProps("getAPIBaseURL", "get") || findByProps("API_HOST", "get");
 
-// Permission constants
-const VIEW_CHANNEL_BIT = 1024;
+// View Channel permission
+const VIEW_CHANNEL = constants?.Permissions?.VIEW_CHANNEL || 1024;
 
 // Storage
 let clipboardMonitorActive = false;
@@ -35,38 +36,15 @@ let lastCheckedClipboard = "";
 let checkIntervalId: any = null;
 let patches: (() => void)[] = [];
 
-// Cached channels with permission overrides (these indicate hidden channels)
-let allGuildChannelsCache: Map<string, any[]> = new Map();
+// Skip these channel types
+const skipChannels = [
+    ChannelTypes.DM,
+    ChannelTypes.GROUP_DM,
+    ChannelTypes.GUILD_CATEGORY
+];
 
 // ========================================
-// PATCHING TO GET HIDDEN CHANNELS
-// ========================================
-
-function patchGuildChannelStore() {
-    if (!GuildChannelStore) {
-        logger.warn("GuildChannelStore not found for patching");
-        return;
-    }
-
-    try {
-        // Patch getChannels to log what it returns
-        if (GuildChannelStore.getChannels) {
-            const unpatch = after("getChannels", GuildChannelStore, (args: any[], result: any) => {
-                // The result normally filters out hidden channels
-                // We'll try to intercept and add hidden ones back
-                logger.log("getChannels called for guild:", args[0]);
-                return result;
-            });
-            patches.push(unpatch);
-            logger.log("Patched GuildChannelStore.getChannels");
-        }
-    } catch (e) {
-        logger.error("Failed to patch GuildChannelStore:", e);
-    }
-}
-
-// ========================================
-// HIDDEN CHANNEL DETECTION - Using ChannelStore directly
+// HIDDEN CHANNEL DETECTION (Like working plugins!)
 // ========================================
 
 interface HiddenChannel {
@@ -75,6 +53,22 @@ interface HiddenChannel {
     type: number;
     parentName: string;
     rolesWithAccess: any[];
+}
+
+// Check if channel is ACTUALLY hidden using real permission check
+function isHidden(channel: any): boolean {
+    if (!channel) return false;
+    if (typeof channel === "string") {
+        channel = getChannel?.(channel) || ChannelStore?.getChannel?.(channel);
+    }
+    if (!channel || skipChannels.includes(channel.type)) return false;
+
+    // Set realCheck flag so our patch returns the REAL result
+    channel.realCheck = true;
+    const hidden = !Permissions?.can?.(VIEW_CHANNEL, channel);
+    delete channel.realCheck;
+
+    return hidden;
 }
 
 function getChannelTypeName(type: number): string {
@@ -89,123 +83,46 @@ function getChannelTypeName(type: number): string {
     }
 }
 
-// Get ALL channels including hidden ones by checking the raw channel cache
-function getAllChannelsIncludingHidden(guildId: string): any[] {
+// Get ALL channels for a guild (now works because of our patch!)
+function getAllGuildChannels(guildId: string): any[] {
     const channels: any[] = [];
 
     try {
-        // Method 1: Direct access to ChannelStore's internal state
-        // ChannelStore should have ALL channels that Discord knows about
-        const allChannels = ChannelStore?.getAllChannels?.() ||
-            ChannelStore?.getChannels?.() ||
-            {};
+        // Get channels from ChannelStore
+        const allChannels = ChannelStore?.getMutableGuildChannelsForGuild?.(guildId) ||
+            ChannelStore?.getGuildChannels?.(guildId) ||
+            Object.values(ChannelStore?.getMutableGuildChannels?.() || {}).filter((c: any) => c?.guild_id === guildId);
 
-        // Filter to just this guild
         if (Array.isArray(allChannels)) {
-            for (const ch of allChannels) {
-                if (ch?.guild_id === guildId) channels.push(ch);
-            }
+            channels.push(...allChannels);
         } else {
-            for (const ch of Object.values(allChannels) as any[]) {
-                if (ch?.guild_id === guildId) channels.push(ch);
-            }
-        }
-
-        logger.log("Method 1 (getAllChannels) count:", channels.length);
-
-        // Method 2: Try getMutableGuildChannelsForGuild
-        if (channels.length === 0) {
-            const guildChannels = ChannelStore?.getMutableGuildChannelsForGuild?.(guildId) || {};
-            for (const ch of Object.values(guildChannels) as any[]) {
-                if (ch?.id) channels.push(ch);
-            }
-            logger.log("Method 2 (getMutableGuildChannelsForGuild) count:", channels.length);
-        }
-
-        // Method 3: Check if there's a way to get raw channel data
-        if (ChannelStore?.__getLocalVars) {
-            try {
-                const localVars = ChannelStore.__getLocalVars();
-                logger.log("ChannelStore local vars keys:", Object.keys(localVars || {}));
-            } catch { }
+            channels.push(...Object.values(allChannels || {}));
         }
 
     } catch (e) {
-        logger.error("getAllChannelsIncludingHidden error:", e);
+        logger.error("getAllGuildChannels error:", e);
     }
 
     return channels;
-}
-
-// Check if a channel is hidden by examining permission overwrites
-function isChannelHidden(channel: any): boolean {
-    if (!channel || !PermissionStore) return false;
-
-    try {
-        // Try PermissionStore.can with the actual channel object
-        const canView = PermissionStore.can?.(VIEW_CHANNEL_BIT, channel);
-
-        if (canView === false) {
-            return true;
-        }
-
-        // Alternative: Check if channel has deny overwrites for @everyone
-        const overwrites = channel.permissionOverwrites || {};
-        const guild = GuildStore?.getGuild?.(channel.guild_id);
-
-        if (guild && overwrites[guild.id]) {
-            const everyoneOverwrite = overwrites[guild.id];
-            const deny = Number(everyoneOverwrite.deny || 0);
-
-            // Check if VIEW_CHANNEL is denied for @everyone
-            if ((deny & VIEW_CHANNEL_BIT) !== 0) {
-                return true;
-            }
-        }
-
-        return false;
-    } catch {
-        return false;
-    }
 }
 
 function getHiddenChannels(guildId: string): HiddenChannel[] {
     const hidden: HiddenChannel[] = [];
 
     try {
-        logger.log("=== SCANNING FOR HIDDEN CHANNELS ===");
-        logger.log("Guild ID:", guildId);
+        logger.log("=== SCANNING HIDDEN CHANNELS ===");
+        logger.log("Permissions module:", !!Permissions);
+        logger.log("VIEW_CHANNEL constant:", String(VIEW_CHANNEL));
 
-        const channels = getAllChannelsIncludingHidden(guildId);
-        logger.log("Total channels retrieved:", channels.length);
-
-        // Log some sample channels for debugging
-        if (channels.length > 0) {
-            logger.log("Sample channel:", JSON.stringify({
-                id: channels[0].id,
-                name: channels[0].name,
-                type: channels[0].type,
-                hasOverwrites: !!channels[0].permissionOverwrites
-            }));
-        }
-
-        let checkedCount = 0;
-        let hiddenByPerms = 0;
-        let hiddenByOverwrites = 0;
+        const channels = getAllGuildChannels(guildId);
+        logger.log("All channels:", channels.length);
 
         for (const channel of channels) {
             if (!channel?.id) continue;
-            if (channel.type === 4) continue; // Category
-            if (channel.type === 1 || channel.type === 3) continue; // DMs
-            if (channel.type === 11 || channel.type === 12) continue; // Threads
+            if (channel.type === 4) continue; // Skip categories
+            if (skipChannels.includes(channel.type)) continue;
 
-            checkedCount++;
-
-            // Check using PermissionStore
-            const canView = PermissionStore?.can?.(VIEW_CHANNEL_BIT, channel);
-
-            if (canView === false) {
-                hiddenByPerms++;
+            if (isHidden(channel)) {
                 hidden.push({
                     id: channel.id,
                     name: channel.name || "unknown",
@@ -214,54 +131,10 @@ function getHiddenChannels(guildId: string): HiddenChannel[] {
                         (ChannelStore?.getChannel?.(channel.parent_id)?.name || "") : "",
                     rolesWithAccess: getChannelRoles(channel, guildId)
                 });
-                continue;
-            }
-
-            // Also check if @everyone has VIEW_CHANNEL denied
-            const overwrites = channel.permissionOverwrites || {};
-            const everyoneId = guildId; // @everyone role has same ID as guild
-
-            if (overwrites[everyoneId]) {
-                const deny = Number(overwrites[everyoneId].deny || 0);
-                if ((deny & VIEW_CHANNEL_BIT) !== 0) {
-                    // @everyone is denied VIEW_CHANNEL
-                    // Check if we have an allow somewhere
-                    const user = UserStore?.getCurrentUser?.();
-                    const member = GuildMemberStore?.getMember?.(guildId, user?.id);
-
-                    let hasAccess = false;
-
-                    // Check if any of our roles grant access
-                    if (member?.roles) {
-                        for (const roleId of member.roles) {
-                            if (overwrites[roleId]) {
-                                const allow = Number(overwrites[roleId].allow || 0);
-                                if ((allow & VIEW_CHANNEL_BIT) !== 0) {
-                                    hasAccess = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    // If we don't have access, it's hidden
-                    if (!hasAccess) {
-                        hiddenByOverwrites++;
-                        hidden.push({
-                            id: channel.id,
-                            name: channel.name || "unknown",
-                            type: channel.type || 0,
-                            parentName: channel.parent_id ?
-                                (ChannelStore?.getChannel?.(channel.parent_id)?.name || "") : "",
-                            rolesWithAccess: getChannelRoles(channel, guildId)
-                        });
-                    }
-                }
             }
         }
 
-        logger.log(`Checked: ${checkedCount}, HiddenByPerms: ${hiddenByPerms}, HiddenByOverwrites: ${hiddenByOverwrites}`);
-        logger.log("Final hidden count:", hidden.length);
+        logger.log("Hidden found:", hidden.length);
 
     } catch (e) {
         logger.error("getHiddenChannels error:", e);
@@ -275,12 +148,13 @@ function getChannelRoles(channel: any, guildId: string): any[] {
     try {
         const overwrites = channel.permissionOverwrites || {};
         const guild = GuildStore?.getGuild?.(guildId);
+        const VIEW_BIT = 1024;
 
         for (const [id, ow] of Object.entries(overwrites) as any[]) {
             if (!ow) continue;
             const allow = Number(ow.allow || 0);
 
-            if ((allow & VIEW_CHANNEL_BIT) !== 0) {
+            if ((allow & VIEW_BIT) !== 0) {
                 if (ow.type === 0 || ow.type === "role") {
                     const role = guild?.roles?.[id];
                     if (role && role.name !== "@everyone") {
@@ -296,16 +170,12 @@ function getChannelRoles(channel: any, guildId: string): any[] {
 function getUserHiddenAccess(guildId: string, userId: string): HiddenChannel[] {
     const hidden = getHiddenChannels(guildId);
     const member = GuildMemberStore?.getMember?.(guildId, userId);
-
     if (!member?.roles) return [];
-
-    return hidden.filter(ch =>
-        ch.rolesWithAccess.some(r => member.roles.includes(r.id))
-    );
+    return hidden.filter(ch => ch.rolesWithAccess.some(r => member.roles.includes(r.id)));
 }
 
 // ========================================
-// MESSAGE SEARCH (unchanged)
+// MESSAGE SEARCH
 // ========================================
 
 function getMutualGuilds(userId: string) {
@@ -347,9 +217,7 @@ async function autoSearchUser(userId: string) {
 
     let allMsgs: any[] = [];
     for (let i = 0; i < Math.min(guilds.length, 8); i++) {
-        try {
-            allMsgs.push(...await searchMessagesInGuild(guilds[i].id, userId));
-        } catch { }
+        try { allMsgs.push(...await searchMessagesInGuild(guilds[i].id, userId)); } catch { }
         if (i < guilds.length - 1) await new Promise(r => setTimeout(r, 250));
     }
 
@@ -422,13 +290,13 @@ function StalkerSettings() {
                 setSelectedGuild(guild);
                 const channels = getHiddenChannels(guildId);
                 setHiddenChannels(channels);
-                const all = getAllChannelsIncludingHidden(guildId);
-                setDebugInfo(`Scanned ${all.length} ch | Found ${channels.length} hidden`);
+                const all = getAllGuildChannels(guildId);
+                setDebugInfo(`${all.length} ch → ${channels.length} hidden`);
                 showToast(channels.length > 0 ? `🔒 ${channels.length} hidden!` : `✨ No hidden`, getAssetIDByName("Check"));
             } else {
                 setSelectedGuild(null);
                 setHiddenChannels([]);
-                setDebugInfo("Open a server first");
+                setDebugInfo("Open server first");
             }
         } catch (e) {
             setDebugInfo(`Error: ${e}`);
@@ -450,7 +318,7 @@ function StalkerSettings() {
         if (!guildId) return;
         const channels = getUserHiddenAccess(guildId, lookupUserId);
         setUserChannels(channels);
-        showToast(`${channels.length} hidden access`, getAssetIDByName("Check"));
+        showToast(`${channels.length} hidden`, getAssetIDByName("Check"));
     };
 
     const roleColor = (c: number) => c ? `#${c.toString(16).padStart(6, '0')}` : '#99AAB5';
@@ -463,7 +331,7 @@ function StalkerSettings() {
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         React.createElement(View, { key: 'h', style: { padding: 16, backgroundColor: '#2b2d31', marginBottom: 8 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 20, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v3.3"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 20, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v4.0"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 12, textAlign: 'center', marginTop: 4 } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
@@ -475,8 +343,10 @@ function StalkerSettings() {
 
         activeTab === 'hidden' && [
             React.createElement(TouchableOpacity, { key: 'scan', style: { margin: 12, padding: 14, backgroundColor: '#5865F2', borderRadius: 12, alignItems: 'center' }, onPress: scanCurrentGuild },
-                React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold', fontSize: 16 } }, isScanning ? "⏳ Scanning..." : "🔄 Scan Server")),
+                React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold', fontSize: 16 } }, isScanning ? "⏳..." : "🔄 Scan Server")),
             React.createElement(Text, { key: 'dbg', style: { color: '#949ba4', textAlign: 'center', fontSize: 11, marginBottom: 8 } }, debugInfo),
+            React.createElement(Text, { key: 'info', style: { color: '#5865F2', textAlign: 'center', fontSize: 10, marginBottom: 8 } },
+                `Permissions: ${Permissions ? '✅' : '❌'} | Patched: ${patches.length > 0 ? '✅' : '❌'}`),
             ...hiddenChannels.map((ch, i) =>
                 React.createElement(TouchableOpacity, { key: `c${i}`, style: { margin: 8, marginTop: 4, padding: 14, backgroundColor: '#2b2d31', borderRadius: 12, borderLeftWidth: 4, borderLeftColor: '#5865F2' }, onPress: () => setExpandedChannel(expandedChannel === ch.id ? null : ch.id) }, [
                     React.createElement(View, { key: 'h', style: { flexDirection: 'row', alignItems: 'center' } }, [
@@ -493,8 +363,7 @@ function StalkerSettings() {
                 ])),
             hiddenChannels.length === 0 && !isScanning && React.createElement(View, { key: 'empty', style: { padding: 30, alignItems: 'center' } }, [
                 React.createElement(Text, { key: 'e1', style: { fontSize: 40 } }, selectedGuild ? "🔓" : "📍"),
-                React.createElement(Text, { key: 'e2', style: { color: '#fff', fontSize: 16, marginTop: 10 } }, selectedGuild ? "No hidden channels" : "Open a server"),
-                React.createElement(Text, { key: 'e3', style: { color: '#b5bac1', marginTop: 4, textAlign: 'center', fontSize: 11 } }, "Check Debug Logs for details")
+                React.createElement(Text, { key: 'e2', style: { color: '#fff', fontSize: 16, marginTop: 10 } }, selectedGuild ? "No hidden channels" : "Open a server")
             ])
         ],
 
@@ -522,20 +391,38 @@ function StalkerSettings() {
 export const settings = StalkerSettings;
 
 export const onLoad = () => {
-    logger.log("=== STALKER PRO v3.3 ===");
+    logger.log("=== STALKER PRO v4.0 ===");
+    logger.log("Permissions module found:", !!Permissions);
 
-    // Apply patches
-    patchGuildChannelStore();
+    // CRITICAL PATCH: Make Permissions.can return true for VIEW_CHANNEL
+    // This tricks Discord into exposing ALL channels, even hidden ones
+    if (Permissions?.can) {
+        const unpatch = after("can", Permissions, ([permID, channel], res) => {
+            // If this is a "real check" (our code checking), return the actual value
+            if (channel?.realCheck) return res;
+
+            // Otherwise, if checking VIEW_CHANNEL, always return true
+            // This makes Discord show all channels in the list
+            if (permID === VIEW_CHANNEL) return true;
+
+            return res;
+        });
+        patches.push(unpatch);
+        logger.log("✅ Patched Permissions.can!");
+    } else {
+        logger.error("❌ Could not find Permissions module to patch!");
+    }
 
     if (Clipboard?.getString) {
         clipboardMonitorActive = true;
         checkIntervalId = setInterval(checkClipboardContent, 2000);
     }
 
-    showToast("🔍 Stalker Pro v3.3", getAssetIDByName("Check"));
+    showToast("🔍 Stalker Pro v4.0", getAssetIDByName("Check"));
 };
 
 export const onUnload = () => {
+    logger.log("Unloading, removing patches...");
     if (checkIntervalId) { clearInterval(checkIntervalId); checkIntervalId = null; }
     for (const p of patches) { try { p(); } catch { } }
     patches = [];
