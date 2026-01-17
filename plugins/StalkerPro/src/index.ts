@@ -82,11 +82,8 @@ const ContextMenu = findByProps("openContextMenu", "closeContextMenu");
 const ChannelActionSheet = findByProps("ChannelLongPressActionSheet");
 const LazyActionSheet = findByProps("openLazy", "hideActionSheet");
 
-// Action sheet modules
+// Action sheet base module
 const ActionSheet = findByProps("openLazy", "hideActionSheet");
-const ActionSheetRow = findByName("ActionSheetRow", false);
-const ActionSheetTitleHeader = findByName("ActionSheetTitleHeader", false);
-const ActionSheetCloseButton = findByName("ActionSheetCloseButton", false);
 
 // Navigation
 const NavigationNative = findByProps("NavigationContainer")?.default;
@@ -96,6 +93,12 @@ const useNavigation = findByProps("useNavigation")?.useNavigation;
 // Commands module
 const Commands = findByProps("registerCommand", "unregisterCommand");
 
+// Native-backed ActionSheet components (gesture-aware, from react-native-gesture-handler)
+// These use RectButton internally and work correctly in the gesture arena
+const ActionSheetComponents = findByProps("ActionSheetRow", "ActionSheetHeader") || {};
+const ActionSheetRow = ActionSheetComponents.ActionSheetRow || findByName("ActionSheetRow", false);
+const ActionSheetHeader = ActionSheetComponents.ActionSheetHeader || findByName("ActionSheetTitleHeader", false);
+
 // Log what we found - with more detail
 debugLog("INIT", `UserProfileHeader: ${!!UserProfileHeader}`);
 debugLog("INIT", `UserProfileSection: ${!!UserProfileSection}`);
@@ -104,9 +107,10 @@ debugLog("INIT", `ChannelLongPress: ${!!ChannelLongPress}`);
 debugLog("INIT", `ChannelLongPress2: ${!!ChannelLongPress2}`);
 debugLog("INIT", `ChannelActionSheet: ${!!ChannelActionSheet}`);
 debugLog("INIT", `ActionSheet: ${!!ActionSheet}`);
+debugLog("INIT", `ActionSheetRow: ${!!ActionSheetRow}`);
+debugLog("INIT", `ActionSheetHeader: ${!!ActionSheetHeader}`);
 debugLog("INIT", `Commands: ${!!Commands}`);
 debugLog("INIT", `NavigationNative: ${!!NavigationNative}`);
-debugLog("INIT", `useNavigation: ${!!useNavigation}`);
 
 // Log module keys to find correct patch targets
 if (ChannelLongPress) {
@@ -445,61 +449,94 @@ function formatTimeAgo(timestamp: string): string {
 }
 
 // ========================================
-// QUICK ACCESS: POPUP DASHBOARD
+// QUICK ACCESS: NAVIGATION TO DASHBOARD
 // ========================================
 
-// Store for quick access data
+// Store for quick access context
 let quickAccessChannelId: string | null = null;
 
+/**
+ * Opens the Stalker Pro dashboard using NavigationRouter.transitionTo
+ * This bypasses the ActionSheet gesture arena conflict by using proper navigation
+ * instead of trying to render custom components inside openLazy
+ */
 function openStalkerDashboard(channelId?: string) {
-    debugLog("NAV", `Quick access for channel: ${channelId || 'none'}`);
+    debugLog("NAV", `Opening dashboard via NavigationRouter, channel: ${channelId || 'none'}`);
 
+    // Store channel context for dashboard use
     if (channelId) {
         quickAccessChannelId = channelId;
+        quickAccessContext = { type: 'channel', id: channelId };
+    }
+
+    // Method 1: Try NavigationRouter.transitionTo with VendettaCustomPage
+    if (NavigationRouter?.transitionTo) {
+        try {
+            // VendettaCustomPage is the standard route for plugin pages
+            // Pass our component as the render parameter
+            NavigationRouter.transitionTo("VendettaCustomPage", {
+                title: "Stalker Pro",
+                render: StalkerSettings,
+                key: "StalkerPro"
+            });
+            debugLog("NAV", "✅ transitionTo VendettaCustomPage called");
+            return;
+        } catch (e) {
+            debugLog("NAV", `VendettaCustomPage failed: ${e}`);
+        }
+
+        // Fallback: Try other route names Vendetta might use
+        const routeNames = [
+            "VendettaPlugin",
+            "PluginSettings",
+            "VENDETTA_CUSTOM_PAGE",
+            "CustomPage"
+        ];
+
+        for (const route of routeNames) {
+            try {
+                NavigationRouter.transitionTo(route, {
+                    title: "Stalker Pro",
+                    render: StalkerSettings
+                });
+                debugLog("NAV", `✅ transitionTo ${route} called`);
+                return;
+            } catch (e) {
+                debugLog("NAV", `${route} failed: ${e}`);
+            }
+        }
+    }
+
+    // Method 2: Try direct navigation to settings plugins
+    if (NavigationRouter?.transitionTo) {
+        try {
+            NavigationRouter.transitionTo("/settings/plugins");
+            debugLog("NAV", "✅ transitionTo /settings/plugins called (fallback)");
+            showToast("📱 Tap 'Stalker Pro' in the list", getAssetIDByName("Check"));
+            return;
+        } catch (e) {
+            debugLog("NAV", `Settings navigation failed: ${e}`);
+        }
+    }
+
+    // Method 3: Fallback - copy channel ID and show info
+    if (channelId) {
         const channel = ChannelStore?.getChannel?.(channelId);
-
         if (channel) {
-            const guildId = channel.guild_id;
-            const permissions = getChannelPermissions(channel, guildId);
-            const channelName = channel.name || "Unknown";
-
-            // Copy channel ID
             safeClipboardCopy(channelId);
-
-            // Build info summary
+            const permissions = getChannelPermissions(channel, channel.guild_id);
             const roles = permissions.overwrites.filter(o => o.type === 'role');
             const users = permissions.overwrites.filter(o => o.type === 'user');
-            // Check if channel has denied VIEW_CHANNEL for @everyone
-            const isHiddenChannel = permissions.overwrites.some(o =>
-                o.name === '@everyone' && o.denied.some(p => p.includes('VIEW'))
-            );
 
-            let info = `🔍 #${channelName}\n`;
+            let info = `🔍 #${channel.name}\n`;
             info += `📋 ID copied: ${channelId}\n`;
-            info += isHiddenChannel ? `🔒 HIDDEN CHANNEL\n` : '';
-            info += `👥 Access: ${roles.length} roles, ${users.length} users\n`;
-
-            if (roles.length > 0) {
-                info += `Roles: ${roles.slice(0, 3).map(r => r.name).join(', ')}`;
-                if (roles.length > 3) info += `... +${roles.length - 3}`;
-            }
+            info += `👥 Access: ${roles.length} roles, ${users.length} users`;
 
             showToast(info, getAssetIDByName("Check"));
-
-            // Log all permissions for debug
-            permissions.overwrites.forEach(ow => {
-                const allowed = ow.allowed.slice(0, 3).map(p => `✅${p}`).join(' ');
-                const denied = ow.denied.slice(0, 3).map(p => `❌${p}`).join(' ');
-                debugLog("PERMS", `${ow.type === 'role' ? '🏷️' : '👤'} ${ow.name}: ${allowed} ${denied}`);
-            });
-
-            debugLog("NAV", "✅ Quick info shown, ID copied, check Debug tab for details");
-        } else {
-            showToast("❌ Channel not found", getAssetIDByName("Small"));
+            debugLog("NAV", "✅ Fallback: Quick info shown");
         }
     } else {
-        // No channel context - just show instructions
-        showToast("📱 Go to: Settings → Plugins → Stalker Pro\n\nOr long-press a channel for quick info!", getAssetIDByName("Check"));
+        showToast("📱 Go to: Settings → Plugins → Stalker Pro", getAssetIDByName("Check"));
     }
 }
 
@@ -689,7 +726,7 @@ function StalkerSettings() {
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         React.createElement(View, { key: 'h', style: { padding: 10, backgroundColor: '#2b2d31', marginBottom: 6 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v6.1-dev"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v7.0-dev"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, textAlign: 'center' } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
@@ -899,7 +936,7 @@ function openDashboardWithContext(type: 'user' | 'channel', id: string) {
 }
 
 export const onLoad = () => {
-    debugLog("LOAD", "=== STALKER PRO v6.1-dev ===");
+    debugLog("LOAD", "=== STALKER PRO v7.0-dev ===");
 
     // Check if Modal is available
     debugLog("INIT", `Modal available: ${!!Modal}`);
@@ -1013,42 +1050,68 @@ export const onLoad = () => {
                     const channelName = channel?.name || "this channel";
 
                     debugLog("INJECT", `Wrapping with button for: ${channelName} (${channelId})`);
+                    debugLog("INJECT", `ActionSheetRow available: ${!!ActionSheetRow}`);
 
-                    const stalkerButton = React.createElement(
-                        TouchableOpacity,
-                        {
-                            key: "stalker-action",
-                            style: {
-                                flexDirection: 'row',
-                                alignItems: 'center',
-                                paddingVertical: 14,
-                                paddingHorizontal: 20,
-                                backgroundColor: '#2b2d31',
-                                marginHorizontal: 12,
-                                marginTop: 8,
-                                marginBottom: 12,
-                                borderRadius: 12,
-                                borderWidth: 1,
-                                borderColor: '#5865F2',
-                            },
-                            onPress: () => {
-                                debugLog("ACTION", `Stalker button pressed for ${channelId}`);
-                                ActionSheet?.hideActionSheet?.();
-                                // Small delay to let the current sheet close
-                                setTimeout(() => {
-                                    openStalkerDashboard(channelId);
-                                }, 100);
+                    let stalkerButton;
+
+                    // Use native-backed ActionSheetRow if available (gesture-aware)
+                    if (ActionSheetRow) {
+                        stalkerButton = React.createElement(
+                            ActionSheetRow,
+                            {
+                                key: "stalker-action",
+                                label: "Stalker Pro Dashboard",
+                                subLabel: `Analyze #${channelName}`,
+                                // Try setting icon if the prop exists
+                                icon: 23490234, // Generic icon ID or leave undefined
+                                onPress: () => {
+                                    debugLog("ACTION", `ActionSheetRow pressed for ${channelId}`);
+                                    ActionSheet?.hideActionSheet?.();
+                                    setTimeout(() => {
+                                        openStalkerDashboard(channelId);
+                                    }, 100);
+                                }
                             }
-                        },
-                        [
-                            React.createElement(Text, { key: "icon", style: { fontSize: 18, marginRight: 12 } }, "🔍"),
-                            React.createElement(View, { key: "txt", style: { flex: 1 } }, [
-                                React.createElement(Text, { key: "t1", style: { color: '#fff', fontSize: 15, fontWeight: 'bold' } }, "Stalker Pro"),
-                                React.createElement(Text, { key: "t2", style: { color: '#b5bac1', fontSize: 11 } }, "Quick Info + Copy ID")
-                            ]),
-                            React.createElement(Text, { key: "arrow", style: { color: '#5865F2', fontSize: 14 } }, "→")
-                        ]
-                    );
+                        );
+                        debugLog("INJECT", "Using ActionSheetRow (native gesture handling)");
+                    } else {
+                        // Fallback to TouchableOpacity if ActionSheetRow not found
+                        stalkerButton = React.createElement(
+                            TouchableOpacity,
+                            {
+                                key: "stalker-action",
+                                style: {
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    paddingVertical: 14,
+                                    paddingHorizontal: 20,
+                                    backgroundColor: '#2b2d31',
+                                    marginHorizontal: 12,
+                                    marginTop: 8,
+                                    marginBottom: 12,
+                                    borderRadius: 12,
+                                    borderWidth: 1,
+                                    borderColor: '#5865F2',
+                                },
+                                onPress: () => {
+                                    debugLog("ACTION", `TouchableOpacity pressed for ${channelId}`);
+                                    ActionSheet?.hideActionSheet?.();
+                                    setTimeout(() => {
+                                        openStalkerDashboard(channelId);
+                                    }, 100);
+                                }
+                            },
+                            [
+                                React.createElement(Text, { key: "icon", style: { fontSize: 18, marginRight: 12 } }, "🔍"),
+                                React.createElement(View, { key: "txt", style: { flex: 1 } }, [
+                                    React.createElement(Text, { key: "t1", style: { color: '#fff', fontSize: 15, fontWeight: 'bold' } }, "Stalker Pro"),
+                                    React.createElement(Text, { key: "t2", style: { color: '#b5bac1', fontSize: 11 } }, "Open Dashboard")
+                                ]),
+                                React.createElement(Text, { key: "arrow", style: { color: '#5865F2', fontSize: 14 } }, "→")
+                            ]
+                        );
+                        debugLog("INJECT", "Using TouchableOpacity fallback (gesture conflict possible)");
+                    }
 
                     // Return a wrapper that includes both the original and our button
                     return React.createElement(
