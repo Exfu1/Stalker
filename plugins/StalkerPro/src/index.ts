@@ -598,7 +598,7 @@ function StalkerSettings() {
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         React.createElement(View, { key: 'h', style: { padding: 10, backgroundColor: '#2b2d31', marginBottom: 6 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v5.3-dev"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v5.4-dev"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, textAlign: 'center' } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
@@ -742,7 +742,7 @@ function openDashboardWithContext(type: 'user' | 'channel', id: string) {
 }
 
 export const onLoad = () => {
-    debugLog("LOAD", "=== STALKER PRO v5.3-dev ===");
+    debugLog("LOAD", "=== STALKER PRO v5.4-dev ===");
 
     // Patch Permissions.can
     if (Permissions?.can) {
@@ -806,42 +806,62 @@ export const onLoad = () => {
                         }
                     }
 
-                    // Still try to inject
-                    if (res?.props?.children && Array.isArray(res.props.children)) {
-                        const stalkerRow = React.createElement(
-                            TouchableOpacity,
-                            {
-                                key: "stalker-perms",
-                                style: {
-                                    flexDirection: 'row',
-                                    alignItems: 'center',
-                                    paddingVertical: 12,
-                                    paddingHorizontal: 16,
-                                    backgroundColor: '#2b2d31',
-                                    marginHorizontal: 12,
-                                    marginVertical: 4,
-                                    borderRadius: 8,
-                                },
-                                onPress: () => {
-                                    debugLog("ACTION", `Stalker pressed!`);
-                                    showToast("🔍 Stalker activated!", getAssetIDByName("Check"));
-                                    ActionSheet?.hideActionSheet?.();
-                                }
+                    // Approach: Wrap the result in a Fragment with our button appended
+                    // Since res is a connected component, we can't inject into its internal children,
+                    // but we can wrap it with our button as a sibling
+                    const channelId = props?.channelId;
+                    const channel = res?.props?.channel;
+                    const channelName = channel?.name || "this channel";
+
+                    debugLog("INJECT", `Wrapping with button for: ${channelName} (${channelId})`);
+
+                    const stalkerButton = React.createElement(
+                        TouchableOpacity,
+                        {
+                            key: "stalker-action",
+                            style: {
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                paddingVertical: 14,
+                                paddingHorizontal: 20,
+                                backgroundColor: '#2b2d31',
+                                marginHorizontal: 12,
+                                marginTop: 8,
+                                marginBottom: 12,
+                                borderRadius: 12,
+                                borderWidth: 1,
+                                borderColor: '#5865F2',
                             },
-                            [
-                                React.createElement(Text, { key: "icon", style: { fontSize: 20, marginRight: 16 } }, "🔐"),
-                                React.createElement(Text, { key: "text", style: { color: '#fff', fontSize: 16 } }, "Stalker Pro")
-                            ]
-                        );
-                        res.props.children.push(stalkerRow);
-                        debugLog("INJECT", "✅ Pushed to children array");
-                    }
+                            onPress: () => {
+                                debugLog("ACTION", `Stalker pressed for ${channelId}`);
+                                if (channelId) {
+                                    openDashboardWithContext('channel', channelId);
+                                }
+                                ActionSheet?.hideActionSheet?.();
+                            }
+                        },
+                        [
+                            React.createElement(Text, { key: "icon", style: { fontSize: 18, marginRight: 12 } }, "🔐"),
+                            React.createElement(View, { key: "txt", style: { flex: 1 } }, [
+                                React.createElement(Text, { key: "t1", style: { color: '#fff', fontSize: 15, fontWeight: 'bold' } }, "Stalker Pro"),
+                                React.createElement(Text, { key: "t2", style: { color: '#b5bac1', fontSize: 11 } }, "View permissions")
+                            ]),
+                            React.createElement(Text, { key: "arrow", style: { color: '#5865F2', fontSize: 14 } }, "→")
+                        ]
+                    );
+
+                    // Return a wrapper that includes both the original and our button
+                    return React.createElement(
+                        View,
+                        { key: "stalker-wrapper", style: { flex: 1 } },
+                        [res, stalkerButton]
+                    );
                 } catch (e) {
                     debugLog("ERROR", `ChannelLongPress inject failed: ${e}`);
+                    return res;
                 }
-                return res;
             }));
-            debugLog("PATCH", "✅ ChannelLongPress patched (v5.3)");
+            debugLog("PATCH", "✅ ChannelLongPress patched (v5.4 - wrapper)");
         } catch (e) { debugLog("ERROR", `ChannelLongPress patch failed: ${e}`); }
     }
 
