@@ -15,6 +15,7 @@ const GuildStore = findByStoreName("GuildStore");
 const GuildMemberStore = findByStoreName("GuildMemberStore");
 const ChannelStore = findByStoreName("ChannelStore");
 const SelectedGuildStore = findByStoreName("SelectedGuildStore");
+const GuildChannelStore = findByStoreName("GuildChannelStore");
 
 // Try multiple ways to get role store
 const GuildRoleStore = findByStoreName("GuildRoleStore");
@@ -48,6 +49,10 @@ let clipboardMonitorActive = false;
 let lastCheckedClipboard = "";
 let checkIntervalId: any = null;
 let patches: (() => void)[] = [];
+
+// IMPORTANT: Flag to control when the patch is active
+// Only true during dashboard scanning operations
+let isActivelyScanning = false;
 
 const skipChannels = [ChannelTypes.DM, ChannelTypes.GROUP_DM, ChannelTypes.GUILD_CATEGORY];
 
@@ -100,10 +105,13 @@ function requestGuildMembers(guildId: string, userIds: string[]) {
     } catch { }
 }
 
+// Check if channel is hidden (only works during scanning when patch is active)
 function isHidden(channel: any): boolean {
     if (!channel) return false;
     if (typeof channel === "string") channel = getChannel?.(channel) || ChannelStore?.getChannel?.(channel);
     if (!channel || skipChannels.includes(channel.type)) return false;
+
+    // Use realCheck flag so our patch returns the REAL permission result
     channel.realCheck = true;
     const hidden = !Permissions?.can?.(VIEW_CHANNEL, channel);
     delete channel.realCheck;
@@ -119,9 +127,7 @@ function parsePermissionBits(bits: number | string): string[] {
     return perms;
 }
 
-// Get role name using multiple methods
 function getRoleName(roleId: string, guildId: string): { name: string, color: number, found: boolean } {
-    // Method 1: GuildStore.getGuild().roles
     try {
         const guild = GuildStore?.getGuild?.(guildId);
         if (guild?.roles?.[roleId]) {
@@ -130,30 +136,15 @@ function getRoleName(roleId: string, guildId: string): { name: string, color: nu
         }
     } catch { }
 
-    // Method 2: GuildRoleStore
     try {
         if (GuildRoleStore) {
             const role = GuildRoleStore.getRole?.(guildId, roleId);
-            if (role) {
-                return { name: role.name, color: role.color || 0, found: true };
-            }
-
+            if (role) return { name: role.name, color: role.color || 0, found: true };
             const roles = GuildRoleStore.getRoles?.(guildId);
-            if (roles?.[roleId]) {
-                return { name: roles[roleId].name, color: roles[roleId].color || 0, found: true };
-            }
+            if (roles?.[roleId]) return { name: roles[roleId].name, color: roles[roleId].color || 0, found: true };
         }
     } catch { }
 
-    // Method 3: Try GuildStore.getRoles
-    try {
-        const roles = GuildStore?.getRoles?.(guildId);
-        if (roles?.[roleId]) {
-            return { name: roles[roleId].name, color: roles[roleId].color || 0, found: true };
-        }
-    } catch { }
-
-    // Not found - return ID as name
     return { name: `Role ID: ${roleId}`, color: 0x5865F2, found: false };
 }
 
@@ -174,14 +165,10 @@ function getChannelPermissions(channel: any, guildId: string): ChannelPermission
             let name = "", color = 0, isUnknown = false;
 
             if (isRole) {
-                if (id === guildId) {
-                    name = "@everyone";
-                    color = 0x99AAB5;
-                } else {
+                if (id === guildId) { name = "@everyone"; color = 0x99AAB5; }
+                else {
                     const roleInfo = getRoleName(id, guildId);
-                    name = roleInfo.name;
-                    color = roleInfo.color;
-                    isUnknown = !roleInfo.found;
+                    name = roleInfo.name; color = roleInfo.color; isUnknown = !roleInfo.found;
                 }
             } else {
                 userIds.push(id);
@@ -212,21 +199,99 @@ function getChannelTypeName(type: number): string {
     }
 }
 
+// Get ALL channels using multiple methods to avoid missing any
 function getAllGuildChannels(guildId: string): any[] {
+    const channelMap = new Map<string, any>();
+
     try {
-        const channels = ChannelStore?.getMutableGuildChannelsForGuild?.(guildId) ||
-            Object.values(ChannelStore?.getMutableGuildChannels?.() || {}).filter((c: any) => c?.guild_id === guildId);
-        return Array.isArray(channels) ? channels : Object.values(channels || {});
-    } catch { return []; }
+        // Method 1: ChannelStore.getMutableGuildChannelsForGuild
+        const method1 = ChannelStore?.getMutableGuildChannelsForGuild?.(guildId);
+        if (method1) {
+            const channels = Array.isArray(method1) ? method1 : Object.values(method1);
+            for (const ch of channels) {
+                if (ch?.id) channelMap.set(ch.id, ch);
+            }
+        }
+    } catch { }
+
+    try {
+        // Method 2: ChannelStore.getMutableGuildChannels and filter
+        const allChannels = ChannelStore?.getMutableGuildChannels?.();
+        if (allChannels) {
+            for (const ch of Object.values(allChannels) as any[]) {
+                if (ch?.guild_id === guildId && ch?.id) channelMap.set(ch.id, ch);
+            }
+        }
+    } catch { }
+
+    try {
+        // Method 3: GuildChannelStore.getChannels
+        if (GuildChannelStore?.getChannels) {
+            const result = GuildChannelStore.getChannels(guildId);
+            if (result) {
+                // Result can have various formats
+                const processChannels = (arr: any[]) => {
+                    if (!Array.isArray(arr)) return;
+                    for (const item of arr) {
+                        const ch = item?.channel || item;
+                        if (ch?.id) channelMap.set(ch.id, ch);
+                    }
+                };
+
+                if (Array.isArray(result)) processChannels(result);
+                else {
+                    // It might be an object with categories like SELECTABLE, VOCAL, etc.
+                    for (const key of Object.keys(result)) {
+                        if (Array.isArray(result[key])) processChannels(result[key]);
+                    }
+                }
+            }
+        }
+    } catch { }
+
+    try {
+        // Method 4: GuildChannelStore.getSelectableChannels
+        if (GuildChannelStore?.getSelectableChannels) {
+            const selectable = GuildChannelStore.getSelectableChannels(guildId);
+            if (Array.isArray(selectable)) {
+                for (const item of selectable) {
+                    const ch = item?.channel || item;
+                    if (ch?.id) channelMap.set(ch.id, ch);
+                }
+            }
+        }
+    } catch { }
+
+    logger.log(`getAllGuildChannels: Found ${channelMap.size} unique channels`);
+    return Array.from(channelMap.values());
 }
 
 function getHiddenChannels(guildId: string): HiddenChannel[] {
     const hidden: HiddenChannel[] = [];
+
+    // Enable patch during scan
+    isActivelyScanning = true;
+
     try {
         const channels = getAllGuildChannels(guildId);
+        logger.log(`Scanning ${channels.length} channels for hidden ones...`);
+
+        let checkedCount = 0;
+        let hiddenCount = 0;
+
         for (const channel of channels) {
-            if (!channel?.id || channel.type === 4 || skipChannels.includes(channel.type)) continue;
+            if (!channel?.id) continue;
+
+            // Skip categories, DMs, threads
+            if (channel.type === 4) continue; // Category
+            if (channel.type === 1 || channel.type === 3) continue; // DM, Group DM
+            if (channel.type === 11 || channel.type === 12) continue; // Threads
+            if (skipChannels.includes(channel.type)) continue;
+
+            checkedCount++;
+
             if (isHidden(channel)) {
+                hiddenCount++;
                 hidden.push({
                     id: channel.id,
                     name: channel.name || "unknown",
@@ -237,7 +302,16 @@ function getHiddenChannels(guildId: string): HiddenChannel[] {
                 });
             }
         }
-    } catch { }
+
+        logger.log(`Checked ${checkedCount} channels, found ${hiddenCount} hidden`);
+
+    } catch (e) {
+        logger.error("getHiddenChannels error:", e);
+    } finally {
+        // Disable patch after scan
+        isActivelyScanning = false;
+    }
+
     return hidden.sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -284,7 +358,6 @@ async function searchMessagesInGuild(guildId: string, authorId: string): Promise
     } catch { return []; }
 }
 
-// For auto-search (clipboard) - still copies
 async function autoSearchUser(userId: string) {
     const currentUser = UserStore?.getCurrentUser?.();
     if (currentUser && userId === currentUser.id) return;
@@ -320,7 +393,6 @@ async function checkClipboardContent() {
     } catch { }
 }
 
-// Format timestamp
 function formatTimeAgo(timestamp: string): string {
     const ago = Date.now() - new Date(timestamp).getTime();
     const m = Math.floor(ago / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
@@ -339,22 +411,26 @@ function StalkerSettings() {
     const [isScanning, setIsScanning] = React.useState(false);
     const [selectedGuild, setSelectedGuild] = React.useState<any>(null);
     const [selectedChannel, setSelectedChannel] = React.useState<HiddenChannel | null>(null);
-    const [debugInfo, setDebugInfo] = React.useState("");
+    const [debugInfo, setDebugInfo] = React.useState("Tap 'Scan' to find hidden channels");
 
-    // User lookup state
     const [lookupUserId, setLookupUserId] = React.useState("");
     const [userAccessChannels, setUserAccessChannels] = React.useState<HiddenChannel[]>([]);
     const [lookupUserInfo, setLookupUserInfo] = React.useState<any>(null);
     const [isLookingUp, setIsLookingUp] = React.useState(false);
 
-    // Message search state
     const [searchUserId, setSearchUserId] = React.useState("");
     const [isSearching, setIsSearching] = React.useState(false);
     const [searchResults, setSearchResults] = React.useState<SearchMessage[]>([]);
 
     const [, forceUpdate] = React.useState(0);
 
-    React.useEffect(() => { scanCurrentGuild(); }, []);
+    // DON'T auto-scan on load - wait for user to tap scan
+    React.useEffect(() => {
+        const guildId = SelectedGuildStore?.getGuildId?.();
+        if (guildId) {
+            setSelectedGuild(GuildStore?.getGuild?.(guildId));
+        }
+    }, []);
 
     React.useEffect(() => {
         if (selectedChannel && selectedChannel.permissions.userIds.length > 0) {
@@ -366,20 +442,30 @@ function StalkerSettings() {
 
     const scanCurrentGuild = () => {
         setIsScanning(true);
+        setHiddenChannels([]);
+
         try {
             const guildId = SelectedGuildStore?.getGuildId?.();
             if (guildId) {
                 const guild = GuildStore?.getGuild?.(guildId);
                 setSelectedGuild(guild);
+
+                // Do the scan (this enables patch temporarily)
                 const channels = getHiddenChannels(guildId);
                 setHiddenChannels(channels);
-                setDebugInfo(`${getAllGuildChannels(guildId).length} ch → ${channels.length} hidden`);
+
+                const total = getAllGuildChannels(guildId).length;
+                setDebugInfo(`Scanned ${total} → ${channels.length} hidden`);
                 showToast(channels.length > 0 ? `🔒 ${channels.length} hidden!` : `✨ No hidden`, getAssetIDByName("Check"));
             } else {
-                setSelectedGuild(null); setHiddenChannels([]); setDebugInfo("Open server first");
+                setSelectedGuild(null);
+                setDebugInfo("Open a server first, then tap Scan");
             }
-        } catch (e) { setDebugInfo(`Error: ${e}`); }
-        finally { setIsScanning(false); }
+        } catch (e) {
+            setDebugInfo(`Error: ${e}`);
+        } finally {
+            setIsScanning(false);
+        }
     };
 
     const refreshSelectedChannel = () => {
@@ -407,7 +493,6 @@ function StalkerSettings() {
         }, 500);
     };
 
-    // Manual search - returns list of messages
     const handleManualSearch = async () => {
         const cleanId = searchUserId.trim();
         if (!cleanId || cleanId.length < 17) { showToast("Enter valid ID", getAssetIDByName("Small")); return; }
@@ -471,13 +556,11 @@ function StalkerSettings() {
         ]);
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
-        // Header
         React.createElement(View, { key: 'h', style: { padding: 10, backgroundColor: '#2b2d31', marginBottom: 6 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v4.4"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v4.5"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, textAlign: 'center' } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
-        // Tabs
         React.createElement(View, { key: 'tabs', style: { flexDirection: 'row', padding: 4, marginBottom: 4 } }, [
             React.createElement(TabBtn, { key: '1', id: 'hidden', label: 'Hidden', icon: '🔒' }),
             React.createElement(TabBtn, { key: '2', id: 'perms', label: 'Perms', icon: '🔐' }),
@@ -485,19 +568,17 @@ function StalkerSettings() {
             React.createElement(TabBtn, { key: '4', id: 'search', label: 'Msgs', icon: '💬' })
         ]),
 
-        // === HIDDEN TAB ===
         activeTab === 'hidden' && [
-            React.createElement(TouchableOpacity, { key: 'scan', style: { margin: 8, padding: 10, backgroundColor: '#5865F2', borderRadius: 8, alignItems: 'center' }, onPress: scanCurrentGuild },
-                React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold', fontSize: 13 } }, isScanning ? "⏳..." : "🔄 Scan Server")),
-            React.createElement(Text, { key: 'dbg', style: { color: '#949ba4', textAlign: 'center', fontSize: 9, marginBottom: 4 } }, debugInfo),
+            React.createElement(TouchableOpacity, { key: 'scan', style: { margin: 8, padding: 12, backgroundColor: '#5865F2', borderRadius: 8, alignItems: 'center' }, onPress: scanCurrentGuild },
+                React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold', fontSize: 14 } }, isScanning ? "⏳ Scanning..." : "🔄 Scan Server")),
+            React.createElement(Text, { key: 'dbg', style: { color: '#949ba4', textAlign: 'center', fontSize: 10, marginBottom: 6 } }, debugInfo),
             ...hiddenChannels.map((ch, i) => React.createElement(ChannelCard, { key: `c${i}`, ch, onPress: () => { setSelectedChannel(ch); setActiveTab('perms'); } })),
             hiddenChannels.length === 0 && !isScanning && React.createElement(View, { key: 'empty', style: { padding: 30, alignItems: 'center' } }, [
-                React.createElement(Text, { key: 'e1', style: { fontSize: 30 } }, "🔓"),
-                React.createElement(Text, { key: 'e2', style: { color: '#fff', fontSize: 13, marginTop: 6 } }, selectedGuild ? "No hidden channels" : "Open a server")
+                React.createElement(Text, { key: 'e1', style: { fontSize: 30 } }, "🔒"),
+                React.createElement(Text, { key: 'e2', style: { color: '#b5bac1', fontSize: 12, marginTop: 6, textAlign: 'center' } }, "Tap 'Scan Server' to find hidden channels")
             ])
         ],
 
-        // === PERMISSIONS TAB ===
         activeTab === 'perms' && [
             !selectedChannel && React.createElement(View, { key: 'no-sel', style: { padding: 30, alignItems: 'center' } }, [
                 React.createElement(Text, { key: 't1', style: { fontSize: 30 } }, "🔐"),
@@ -533,7 +614,6 @@ function StalkerSettings() {
             ]
         ],
 
-        // === USER LOOKUP TAB ===
         activeTab === 'user' && [
             React.createElement(View, { key: 'input-box', style: { margin: 8, padding: 10, backgroundColor: '#2b2d31', borderRadius: 8 } }, [
                 React.createElement(Text, { key: 'lbl', style: { color: '#fff', fontSize: 11, fontWeight: 'bold', marginBottom: 4 } }, "👤 User ID Lookup"),
@@ -553,7 +633,6 @@ function StalkerSettings() {
             lookupUserInfo && userAccessChannels.length === 0 && React.createElement(Text, { key: 'no', style: { color: '#949ba4', textAlign: 'center', fontSize: 11, marginTop: 10 } }, "No hidden channel access")
         ],
 
-        // === MESSAGE SEARCH TAB ===
         activeTab === 'search' && [
             React.createElement(View, { key: 'auto-info', style: { margin: 8, padding: 8, backgroundColor: '#2b2d31', borderRadius: 8 } }, [
                 React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 11, fontWeight: 'bold' } }, "💬 Auto-Search"),
@@ -584,7 +663,7 @@ function StalkerSettings() {
                 ])
             ),
 
-            searchResults.length > 25 && React.createElement(Text, { key: 'more', style: { color: '#949ba4', textAlign: 'center', fontSize: 10, marginVertical: 8 } }, `+${searchResults.length - 25} more messages...`)
+            searchResults.length > 25 && React.createElement(Text, { key: 'more', style: { color: '#949ba4', textAlign: 'center', fontSize: 10, marginVertical: 8 } }, `+${searchResults.length - 25} more...`)
         ]
     ]);
 }
@@ -592,23 +671,34 @@ function StalkerSettings() {
 export const settings = StalkerSettings;
 
 export const onLoad = () => {
-    logger.log("=== STALKER PRO v4.4 ===");
+    logger.log("=== STALKER PRO v4.5 ===");
+
+    // Patch Permissions.can but ONLY return true when actively scanning
     if (Permissions?.can) {
         patches.push(after("can", Permissions, ([permID, channel], res) => {
+            // If doing a realCheck, return the actual result
             if (channel?.realCheck) return res;
-            if (permID === VIEW_CHANNEL) return true;
+
+            // ONLY override when we're actively scanning in the dashboard
+            if (isActivelyScanning && permID === VIEW_CHANNEL) return true;
+
+            // Otherwise, return normal behavior
             return res;
         }));
+        logger.log("✅ Patched Permissions.can (scan-only mode)");
     }
+
     if (Clipboard?.getString) {
         clipboardMonitorActive = true;
         checkIntervalId = setInterval(checkClipboardContent, 2000);
     }
-    showToast("🔍 Stalker Pro v4.4", getAssetIDByName("Check"));
+
+    showToast("🔍 Stalker Pro v4.5", getAssetIDByName("Check"));
 };
 
 export const onUnload = () => {
     if (checkIntervalId) { clearInterval(checkIntervalId); checkIntervalId = null; }
     for (const p of patches) { try { p(); } catch { } }
     patches = [];
+    isActivelyScanning = false;
 };
