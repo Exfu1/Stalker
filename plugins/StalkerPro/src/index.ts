@@ -598,7 +598,7 @@ function StalkerSettings() {
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         React.createElement(View, { key: 'h', style: { padding: 10, backgroundColor: '#2b2d31', marginBottom: 6 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v5.2-dev"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v5.3-dev"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, textAlign: 'center' } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
@@ -742,7 +742,7 @@ function openDashboardWithContext(type: 'user' | 'channel', id: string) {
 }
 
 export const onLoad = () => {
-    debugLog("LOAD", "=== STALKER PRO v5.2-dev ===");
+    debugLog("LOAD", "=== STALKER PRO v5.3-dev ===");
 
     // Patch Permissions.can
     if (Permissions?.can) {
@@ -759,17 +759,55 @@ export const onLoad = () => {
     // Try to patch ChannelLongPress to add our option
     if (ChannelLongPress) {
         try {
-            patches.push(after("default", ChannelLongPress, (args, res) => {
+            patches.push(after("default", ChannelLongPress, (args: any, res: any) => {
                 try {
                     const props = args[0];
-                    const channelId = props?.channel?.id;
-                    const channelName = props?.channel?.name || "channel";
 
-                    debugLog("CHANNEL", `LongPress rendered: ${channelName} (${channelId})`);
+                    // Log props structure to find where channel data is
+                    if (props) {
+                        const propKeys = Object.keys(props);
+                        debugLog("STRUCT", `Props keys: ${propKeys.join(', ')}`);
 
-                    // Try to find children and add our row
-                    if (res && res.props && res.props.children) {
-                        // Create our custom action item
+                        // Try to find channel in various places
+                        const channelId = props?.channel?.id || props?.channelId || props?.id;
+                        const channelName = props?.channel?.name || props?.name || "unknown";
+                        debugLog("CHANNEL", `LongPress: ${channelName} (${channelId})`);
+
+                        // Log a preview of each prop
+                        for (const key of propKeys.slice(0, 5)) {
+                            const val = props[key];
+                            const type = typeof val;
+                            if (type === 'object' && val !== null) {
+                                const subKeys = Object.keys(val).slice(0, 3);
+                                debugLog("STRUCT", `  props.${key} = {${subKeys.join(', ')}...}`);
+                            } else {
+                                debugLog("STRUCT", `  props.${key} = ${type}`);
+                            }
+                        }
+                    }
+
+                    // Log res structure to find where to inject
+                    if (res) {
+                        debugLog("STRUCT", `res type: ${res.type?.name || res.type?.displayName || typeof res.type}`);
+                        if (res.props) {
+                            const resKeys = Object.keys(res.props);
+                            debugLog("STRUCT", `res.props keys: ${resKeys.join(', ')}`);
+
+                            if (res.props.children) {
+                                const children = res.props.children;
+                                if (Array.isArray(children)) {
+                                    debugLog("STRUCT", `res.props.children = Array(${children.length})`);
+                                } else if (children && typeof children === 'object') {
+                                    debugLog("STRUCT", `res.props.children = ${children.type?.name || children.type?.displayName || 'object'}`);
+                                } else {
+                                    debugLog("STRUCT", `res.props.children = ${typeof children}`);
+                                }
+                            }
+                        }
+                    }
+
+                    // Still try to inject
+                    if (res?.props?.children && Array.isArray(res.props.children)) {
                         const stalkerRow = React.createElement(
                             TouchableOpacity,
                             {
@@ -779,41 +817,31 @@ export const onLoad = () => {
                                     alignItems: 'center',
                                     paddingVertical: 12,
                                     paddingHorizontal: 16,
+                                    backgroundColor: '#2b2d31',
+                                    marginHorizontal: 12,
+                                    marginVertical: 4,
+                                    borderRadius: 8,
                                 },
                                 onPress: () => {
-                                    debugLog("ACTION", `Stalker pressed for channel: ${channelId}`);
-                                    openDashboardWithContext('channel', channelId);
-                                    // Try to close the action sheet
+                                    debugLog("ACTION", `Stalker pressed!`);
+                                    showToast("🔍 Stalker activated!", getAssetIDByName("Check"));
                                     ActionSheet?.hideActionSheet?.();
                                 }
                             },
                             [
                                 React.createElement(Text, { key: "icon", style: { fontSize: 20, marginRight: 16 } }, "🔐"),
-                                React.createElement(Text, { key: "text", style: { color: '#fff', fontSize: 16 } }, "View Permissions (Stalker)")
+                                React.createElement(Text, { key: "text", style: { color: '#fff', fontSize: 16 } }, "Stalker Pro")
                             ]
                         );
-
-                        // Try to inject our row
-                        const children = res.props.children;
-                        if (Array.isArray(children)) {
-                            // Add to the array
-                            children.push(stalkerRow);
-                            debugLog("INJECT", "✅ Added row to children array");
-                        } else if (children && children.props && children.props.children) {
-                            // Nested structure
-                            const nestedChildren = children.props.children;
-                            if (Array.isArray(nestedChildren)) {
-                                nestedChildren.push(stalkerRow);
-                                debugLog("INJECT", "✅ Added row to nested children");
-                            }
-                        }
+                        res.props.children.push(stalkerRow);
+                        debugLog("INJECT", "✅ Pushed to children array");
                     }
                 } catch (e) {
                     debugLog("ERROR", `ChannelLongPress inject failed: ${e}`);
                 }
                 return res;
             }));
-            debugLog("PATCH", "✅ ChannelLongPress patched (with injection)");
+            debugLog("PATCH", "✅ ChannelLongPress patched (v5.3)");
         } catch (e) { debugLog("ERROR", `ChannelLongPress patch failed: ${e}`); }
     }
 
