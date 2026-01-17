@@ -478,13 +478,19 @@ function openStalkerDashboard() {
                 React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold' } }, "🔍 Stalker Pro Dashboard"),
                 React.createElement(TouchableOpacity, {
                     key: 'close',
-                    style: { padding: 8, backgroundColor: '#ed4245', borderRadius: 6 },
+                    style: { padding: 12, backgroundColor: '#ed4245', borderRadius: 8 },
                     onPress: () => {
-                        debugLog("NAV", "Closing dashboard sheet");
-                        ActionSheet?.hideActionSheet?.();
+                        debugLog("NAV", "Close button pressed - trying all methods");
+                        // Try all close methods
+                        try { ActionSheet?.hideAllActionSheets?.(); } catch (e) { debugLog("NAV", `hideAllActionSheets failed: ${e}`); }
+                        try { ActionSheet?.hideActionSheet?.(); } catch (e) { debugLog("NAV", `hideActionSheet failed: ${e}`); }
+                        // Also try via LazyActionSheet if available
+                        try { LazyActionSheet?.hideActionSheet?.(); } catch (e) { }
                     }
-                }, React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold', fontSize: 12 } }, "✕"))
+                }, React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold', fontSize: 14 } }, "✕ Close"))
             ]),
+            // Swipe hint
+            React.createElement(Text, { key: 'hint', style: { color: '#949ba4', fontSize: 10, textAlign: 'center', paddingVertical: 4, backgroundColor: '#2b2d31' } }, "↓ Swipe down to close"),
             // Dashboard content - render StalkerSettings inline
             React.createElement(StalkerSettings, { key: 'content' })
         ]);
@@ -695,7 +701,7 @@ function StalkerSettings() {
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         React.createElement(View, { key: 'h', style: { padding: 10, backgroundColor: '#2b2d31', marginBottom: 6 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v5.9-dev"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v6.0-dev"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, textAlign: 'center' } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
@@ -905,7 +911,7 @@ function openDashboardWithContext(type: 'user' | 'channel', id: string) {
 }
 
 export const onLoad = () => {
-    debugLog("LOAD", "=== STALKER PRO v5.9-dev ===");
+    debugLog("LOAD", "=== STALKER PRO v6.0-dev ===");
 
     // Check if Modal is available
     debugLog("INIT", `Modal available: ${!!Modal}`);
