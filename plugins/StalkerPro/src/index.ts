@@ -700,8 +700,15 @@ function StalkerSettings() {
 
 export const settings = StalkerSettings;
 
+// Helper to open dashboard with context
+function openDashboardWithContext(type: 'user' | 'channel', id: string) {
+    quickAccessContext = { type, id };
+    debugLog("ACTION", `Set context: ${type} = ${id}`);
+    showToast(`🔍 Open plugin settings to view!`, getAssetIDByName("Check"));
+}
+
 export const onLoad = () => {
-    debugLog("LOAD", "=== STALKER PRO v5.0-dev ===");
+    debugLog("LOAD", "=== STALKER PRO v5.1-dev ===");
 
     // Patch Permissions.can
     if (Permissions?.can) {
@@ -715,27 +722,137 @@ export const onLoad = () => {
         } catch (e) { debugLog("ERROR", `Permissions.can patch failed: ${e}`); }
     }
 
-    // Try to patch user profile
-    if (UserProfileHeader) {
-        try {
-            patches.push(after("default", UserProfileHeader, ([props], res) => {
-                debugLog("PROFILE", `UserProfileHeader rendered for user: ${props?.user?.id || 'unknown'}`);
-                // Can't easily add button here without more complex React manipulation
-                return res;
-            }));
-            debugLog("PATCH", "✅ UserProfileHeader patched (monitoring)");
-        } catch (e) { debugLog("ERROR", `UserProfileHeader patch failed: ${e}`); }
-    }
-
-    // Try to patch channel long press
+    // Try to patch ChannelLongPress to add our option
     if (ChannelLongPress) {
         try {
-            patches.push(after("default", ChannelLongPress, ([props], res) => {
-                debugLog("CHANNEL", `ChannelLongPress for channel: ${props?.channel?.id || 'unknown'}`);
+            patches.push(after("default", ChannelLongPress, (args, res) => {
+                try {
+                    const props = args[0];
+                    const channelId = props?.channel?.id;
+                    const channelName = props?.channel?.name || "channel";
+
+                    debugLog("CHANNEL", `LongPress rendered: ${channelName} (${channelId})`);
+
+                    // Try to find children and add our row
+                    if (res && res.props && res.props.children) {
+                        // Create our custom action item
+                        const stalkerRow = React.createElement(
+                            TouchableOpacity,
+                            {
+                                key: "stalker-perms",
+                                style: {
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    paddingVertical: 12,
+                                    paddingHorizontal: 16,
+                                },
+                                onPress: () => {
+                                    debugLog("ACTION", `Stalker pressed for channel: ${channelId}`);
+                                    openDashboardWithContext('channel', channelId);
+                                    // Try to close the action sheet
+                                    ActionSheet?.hideActionSheet?.();
+                                }
+                            },
+                            [
+                                React.createElement(Text, { key: "icon", style: { fontSize: 20, marginRight: 16 } }, "🔐"),
+                                React.createElement(Text, { key: "text", style: { color: '#fff', fontSize: 16 } }, "View Permissions (Stalker)")
+                            ]
+                        );
+
+                        // Try to inject our row
+                        const children = res.props.children;
+                        if (Array.isArray(children)) {
+                            // Add to the array
+                            children.push(stalkerRow);
+                            debugLog("INJECT", "✅ Added row to children array");
+                        } else if (children && children.props && children.props.children) {
+                            // Nested structure
+                            const nestedChildren = children.props.children;
+                            if (Array.isArray(nestedChildren)) {
+                                nestedChildren.push(stalkerRow);
+                                debugLog("INJECT", "✅ Added row to nested children");
+                            }
+                        }
+                    }
+                } catch (e) {
+                    debugLog("ERROR", `ChannelLongPress inject failed: ${e}`);
+                }
                 return res;
             }));
-            debugLog("PATCH", "✅ ChannelLongPress patched (monitoring)");
+            debugLog("PATCH", "✅ ChannelLongPress patched (with injection)");
         } catch (e) { debugLog("ERROR", `ChannelLongPress patch failed: ${e}`); }
+    }
+
+    // Try to patch ProfileBanner if available
+    if (ProfileBanner) {
+        try {
+            patches.push(after("default", ProfileBanner, (args, res) => {
+                try {
+                    const props = args[0];
+                    const userId = props?.user?.id || props?.userId;
+
+                    if (userId) {
+                        debugLog("PROFILE", `ProfileBanner rendered: ${userId}`);
+                    }
+                } catch (e) {
+                    debugLog("ERROR", `ProfileBanner read failed: ${e}`);
+                }
+                return res;
+            }));
+            debugLog("PATCH", "✅ ProfileBanner patched (monitoring)");
+        } catch (e) { debugLog("ERROR", `ProfileBanner patch failed: ${e}`); }
+    }
+
+    // Try to patch UserProfileSection if available
+    if (UserProfileSection) {
+        try {
+            patches.push(after("default", UserProfileSection, (args, res) => {
+                try {
+                    const props = args[0];
+                    const userId = props?.user?.id || props?.userId;
+
+                    if (userId) {
+                        debugLog("PROFILE", `UserProfileSection rendered: ${userId}`);
+
+                        // Try to add a section
+                        if (res && res.props && res.props.children) {
+                            const stalkerSection = React.createElement(
+                                TouchableOpacity,
+                                {
+                                    key: "stalker-section",
+                                    style: {
+                                        backgroundColor: '#2b2d31',
+                                        margin: 12,
+                                        padding: 12,
+                                        borderRadius: 8,
+                                        flexDirection: 'row',
+                                        alignItems: 'center',
+                                    },
+                                    onPress: () => {
+                                        debugLog("ACTION", `Stalker pressed for user: ${userId}`);
+                                        openDashboardWithContext('user', userId);
+                                    }
+                                },
+                                [
+                                    React.createElement(Text, { key: "icon", style: { fontSize: 16, marginRight: 8 } }, "🔍"),
+                                    React.createElement(Text, { key: "text", style: { color: '#fff', fontSize: 14 } }, "Stalker Pro")
+                                ]
+                            );
+
+                            const children = res.props.children;
+                            if (Array.isArray(children)) {
+                                children.push(stalkerSection);
+                                debugLog("INJECT", "✅ Added section to profile");
+                            }
+                        }
+                    }
+                } catch (e) {
+                    debugLog("ERROR", `UserProfileSection inject failed: ${e}`);
+                }
+                return res;
+            }));
+            debugLog("PATCH", "✅ UserProfileSection patched (with injection)");
+        } catch (e) { debugLog("ERROR", `UserProfileSection patch failed: ${e}`); }
     }
 
     // Start clipboard monitor
@@ -745,15 +862,18 @@ export const onLoad = () => {
         debugLog("LOAD", "✅ Clipboard monitor started");
     }
 
-    showToast("🔍 Stalker Pro v5.0-dev", getAssetIDByName("Check"));
+    debugLog("LOAD", `Total patches: ${patches.length}`);
+    showToast("🔍 Stalker Pro v5.1-dev", getAssetIDByName("Check"));
 };
 
 export const onUnload = () => {
     debugLog("UNLOAD", "Cleaning up...");
     if (checkIntervalId) { clearInterval(checkIntervalId); checkIntervalId = null; }
+    const patchCount = patches.length;
     for (const p of patches) { try { p(); } catch { } }
     patches = [];
     isActivelyScanning = false;
     isDashboardOpen = false;
-    debugLog("UNLOAD", `Removed ${patches.length} patches`);
+    debugLog("UNLOAD", `Removed ${patchCount} patches`);
 };
+
