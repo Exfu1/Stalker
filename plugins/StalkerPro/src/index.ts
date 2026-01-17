@@ -93,11 +93,52 @@ const useNavigation = findByProps("useNavigation")?.useNavigation;
 // Commands module
 const Commands = findByProps("registerCommand", "unregisterCommand");
 
-// Native-backed ActionSheet components (gesture-aware, from react-native-gesture-handler)
-// These use RectButton internally and work correctly in the gesture arena
-const ActionSheetComponents = findByProps("ActionSheetRow", "ActionSheetHeader") || {};
-const ActionSheetRow = ActionSheetComponents.ActionSheetRow || findByName("ActionSheetRow", false);
-const ActionSheetHeader = ActionSheetComponents.ActionSheetHeader || findByName("ActionSheetTitleHeader", false);
+// ========================================
+// ACTIONSHEETROW DISCOVERY (Enhanced)
+// ========================================
+// Native-backed ActionSheet components use RectButton from react-native-gesture-handler
+// These work correctly in the gesture arena unlike standard TouchableOpacity
+
+// Method 1: Try findByProps with various combinations
+const ActionSheetComponents =
+    findByProps("ActionSheetRow", "ActionSheetHeader") ||
+    findByProps("ActionSheetRow") ||
+    findByProps("ActionSheetItem") ||
+    {};
+
+// Method 2: Try findByName with variations
+const ActionSheetRow =
+    ActionSheetComponents.ActionSheetRow ||
+    ActionSheetComponents.ActionSheetItem ||
+    findByName("ActionSheetRow", false) ||
+    findByName("ActionSheetItem", false) ||
+    findByName("ActionSheetButton", false) ||
+    findByName("BottomSheetRow", false) ||
+    findByName("SheetRow", false);
+
+const ActionSheetHeader =
+    ActionSheetComponents.ActionSheetHeader ||
+    findByName("ActionSheetTitleHeader", false) ||
+    findByName("ActionSheetHeader", false);
+
+// Method 3: Try to find via the ActionSheet module itself
+let ActionSheetRowFromModule: any = null;
+if (ActionSheet) {
+    try {
+        const asKeys = Object.keys(ActionSheet);
+        debugLog("DISCOVER", `ActionSheet has keys: ${asKeys.join(', ')}`);
+        // Look for Row or Item in ActionSheet
+        for (const key of asKeys) {
+            if (key.includes('Row') || key.includes('Item') || key.includes('Button')) {
+                ActionSheetRowFromModule = ActionSheet[key];
+                debugLog("DISCOVER", `Found ActionSheet.${key}: ${typeof ActionSheetRowFromModule}`);
+            }
+        }
+    } catch (e) { debugLog("ERROR", `ActionSheet exploration failed: ${e}`); }
+}
+
+// Final ActionSheetRow selection
+const FinalActionSheetRow = ActionSheetRow || ActionSheetRowFromModule;
 
 // Log what we found - with more detail
 debugLog("INIT", `UserProfileHeader: ${!!UserProfileHeader}`);
@@ -469,14 +510,28 @@ function openStalkerDashboard(channelId?: string) {
         quickAccessContext = { type: 'channel', id: channelId };
     }
 
-    // Log current navigation history for debugging
+    // Log current navigation history for debugging - DETAILED
     if (NavigationRouter?.getHistory) {
         try {
             const history = NavigationRouter.getHistory();
             debugLog("NAV", `History entries: ${history?.length || 0}`);
             if (history?.length > 0) {
-                const current = history[history.length - 1];
-                debugLog("NAV", `Current route: ${current?.name || current?.routeName || JSON.stringify(current)?.slice(0, 100)}`);
+                // Log last few entries to understand structure
+                const lastEntries = history.slice(-3);
+                lastEntries.forEach((entry: any, i: number) => {
+                    if (entry) {
+                        const keys = Object.keys(entry);
+                        debugLog("NAV", `History[${history.length - 3 + i}] keys: ${keys.join(', ')}`);
+                        // Log key properties
+                        if (entry.pathname) debugLog("NAV", `  pathname: ${entry.pathname}`);
+                        if (entry.path) debugLog("NAV", `  path: ${entry.path}`);
+                        if (entry.key) debugLog("NAV", `  key: ${entry.key}`);
+                        if (entry.state) {
+                            const stateKeys = Object.keys(entry.state);
+                            debugLog("NAV", `  state keys: ${stateKeys.join(', ')}`);
+                        }
+                    }
+                });
             }
         } catch (e) {
             debugLog("NAV", `History read failed: ${e}`);
@@ -731,7 +786,7 @@ function StalkerSettings() {
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         React.createElement(View, { key: 'h', style: { padding: 10, backgroundColor: '#2b2d31', marginBottom: 6 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v7.1-dev"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v7.2-dev"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, textAlign: 'center' } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
@@ -941,7 +996,7 @@ function openDashboardWithContext(type: 'user' | 'channel', id: string) {
 }
 
 export const onLoad = () => {
-    debugLog("LOAD", "=== STALKER PRO v7.1-dev ===");
+    debugLog("LOAD", "=== STALKER PRO v7.2-dev ===");
 
     // Check if Modal is available
     debugLog("INIT", `Modal available: ${!!Modal}`);
@@ -1055,14 +1110,14 @@ export const onLoad = () => {
                     const channelName = channel?.name || "this channel";
 
                     debugLog("INJECT", `Wrapping with button for: ${channelName} (${channelId})`);
-                    debugLog("INJECT", `ActionSheetRow available: ${!!ActionSheetRow}`);
+                    debugLog("INJECT", `FinalActionSheetRow available: ${!!FinalActionSheetRow}`);
 
                     let stalkerButton;
 
                     // Use native-backed ActionSheetRow if available (gesture-aware)
-                    if (ActionSheetRow) {
+                    if (FinalActionSheetRow) {
                         stalkerButton = React.createElement(
-                            ActionSheetRow,
+                            FinalActionSheetRow,
                             {
                                 key: "stalker-action",
                                 label: "Stalker Pro Dashboard",
@@ -1070,7 +1125,7 @@ export const onLoad = () => {
                                 // Try setting icon if the prop exists
                                 icon: 23490234, // Generic icon ID or leave undefined
                                 onPress: () => {
-                                    debugLog("ACTION", `ActionSheetRow pressed for ${channelId}`);
+                                    debugLog("ACTION", `FinalActionSheetRow pressed for ${channelId}`);
                                     ActionSheet?.hideActionSheet?.();
                                     setTimeout(() => {
                                         openStalkerDashboard(channelId);
