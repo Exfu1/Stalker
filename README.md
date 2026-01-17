@@ -108,17 +108,6 @@ View detailed permissions for any channel.
 
 ---
 
-### 📋 Debug Tab
-View all plugin activity logs for troubleshooting.
-
-**What it shows:**
-- Channel scans and results
-- API requests
-- Permission lookups
-- Any errors that occur
-
----
-
 ## 💡 Tips & Tricks
 
 ### Quick Access
