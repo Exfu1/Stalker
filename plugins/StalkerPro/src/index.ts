@@ -345,7 +345,7 @@ async function autoSearchUser(userId: string) {
     const link = `https://discord.com/channels/${latest.guildId}/${latest.channelId}/${latest.id}`;
 
     showToast(`✅ Found ${allMsgs.length}!`, getAssetIDByName("Check"));
-    setTimeout(() => { if (Clipboard?.setString) { Clipboard.setString(link); showToast(`📋 Copied latest!`, getAssetIDByName("Check")); } }, 1500);
+    setTimeout(() => { if (safeClipboardCopy(link)) { showToast(`📋 Copied latest!`, getAssetIDByName("Check")); } }, 1500);
 }
 
 async function checkClipboardContent() {
@@ -371,10 +371,19 @@ function formatTimeAgo(timestamp: string): string {
     return `${m}m ago`;
 }
 
+// Safe clipboard copy - always update lastCheckedClipboard to prevent auto-search trigger
+function safeClipboardCopy(text: string) {
+    if (Clipboard?.setString) {
+        Clipboard.setString(text);
+        lastCheckedClipboard = text; // Prevent auto-search from triggering
+        return true;
+    }
+    return false;
+}
+
 // Copy ID with toast
 function copyId(id: string, type: 'role' | 'user') {
-    if (Clipboard?.setString) {
-        Clipboard.setString(id);
+    if (safeClipboardCopy(id)) {
         showToast(`📋 ${type === 'role' ? 'Role' : 'User'} ID copied!`, getAssetIDByName("Check"));
     }
 }
@@ -505,7 +514,7 @@ function StalkerSettings() {
 
     const copyMessageLink = (msg: SearchMessage) => {
         const link = `https://discord.com/channels/${msg.guildId}/${msg.channelId}/${msg.id}`;
-        if (Clipboard?.setString) { Clipboard.setString(link); showToast("📋 Link copied!", getAssetIDByName("Check")); }
+        if (safeClipboardCopy(link)) { showToast("📋 Link copied!", getAssetIDByName("Check")); }
     };
 
     const pasteFromClipboard = async (setter: (v: string) => void) => {
@@ -602,7 +611,7 @@ function StalkerSettings() {
                 React.createElement(View, { key: 'btns', style: { flexDirection: 'row', margin: 6, marginTop: 0 } }, [
                     React.createElement(TouchableOpacity, { key: 'ref', style: { flex: 1, padding: 8, backgroundColor: '#3f4147', borderRadius: 6, marginRight: 2, alignItems: 'center' }, onPress: refreshSelectedChannel },
                         React.createElement(Text, { style: { color: '#fff', fontSize: 10 } }, "🔄 Refresh Names")),
-                    React.createElement(TouchableOpacity, { key: 'cpy', style: { flex: 1, padding: 8, backgroundColor: '#3f4147', borderRadius: 6, marginLeft: 2, alignItems: 'center' }, onPress: () => { if (Clipboard?.setString) { Clipboard.setString(selectedChannel.id); showToast("📋 Channel ID copied", getAssetIDByName("Check")); } } },
+                    React.createElement(TouchableOpacity, { key: 'cpy', style: { flex: 1, padding: 8, backgroundColor: '#3f4147', borderRadius: 6, marginLeft: 2, alignItems: 'center' }, onPress: () => { if (safeClipboardCopy(selectedChannel.id)) { showToast("📋 Channel ID copied", getAssetIDByName("Check")); } } },
                         React.createElement(Text, { style: { color: '#b5bac1', fontSize: 9 } }, `📋 Channel ID`))
                 ]),
                 React.createElement(Text, { key: 'hint', style: { color: '#949ba4', fontSize: 9, textAlign: 'center', marginBottom: 4 } }, "Tap any role/user to copy their ID"),
