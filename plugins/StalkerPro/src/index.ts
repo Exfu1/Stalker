@@ -448,70 +448,58 @@ function formatTimeAgo(timestamp: string): string {
 // QUICK ACCESS: POPUP DASHBOARD
 // ========================================
 
-function openStalkerDashboard() {
-    debugLog("NAV", "Opening Stalker dashboard via ActionSheet...");
+// Store for quick access data
+let quickAccessChannelId: string | null = null;
 
-    // Create a wrapper component for the dashboard
-    const DashboardSheet = () => {
-        return React.createElement(View, {
-            style: {
-                backgroundColor: '#1e1f22',
-                maxHeight: 600,
-                borderTopLeftRadius: 12,
-                borderTopRightRadius: 12,
-                overflow: 'hidden'
-            }
-        }, [
-            // Header with close button
-            React.createElement(View, {
-                key: 'hdr',
-                style: {
-                    flexDirection: 'row',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    padding: 12,
-                    backgroundColor: '#2b2d31',
-                    borderBottomWidth: 1,
-                    borderBottomColor: '#1e1f22'
-                }
-            }, [
-                React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold' } }, "🔍 Stalker Pro Dashboard"),
-                React.createElement(TouchableOpacity, {
-                    key: 'close',
-                    style: { padding: 12, backgroundColor: '#ed4245', borderRadius: 8 },
-                    onPress: () => {
-                        debugLog("NAV", "Close button pressed - trying all methods");
-                        // Try all close methods
-                        try { ActionSheet?.hideAllActionSheets?.(); } catch (e) { debugLog("NAV", `hideAllActionSheets failed: ${e}`); }
-                        try { ActionSheet?.hideActionSheet?.(); } catch (e) { debugLog("NAV", `hideActionSheet failed: ${e}`); }
-                        // Also try via LazyActionSheet if available
-                        try { LazyActionSheet?.hideActionSheet?.(); } catch (e) { }
-                    }
-                }, React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold', fontSize: 14 } }, "✕ Close"))
-            ]),
-            // Swipe hint
-            React.createElement(Text, { key: 'hint', style: { color: '#949ba4', fontSize: 10, textAlign: 'center', paddingVertical: 4, backgroundColor: '#2b2d31' } }, "↓ Swipe down to close"),
-            // Dashboard content - render StalkerSettings inline
-            React.createElement(StalkerSettings, { key: 'content' })
-        ]);
-    };
+function openStalkerDashboard(channelId?: string) {
+    debugLog("NAV", `Quick access for channel: ${channelId || 'none'}`);
 
-    // Try to open using ActionSheet.openLazy
-    if (ActionSheet?.openLazy) {
-        try {
-            ActionSheet.openLazy(
-                Promise.resolve({ default: DashboardSheet }),
-                "StalkerDashboard",
-                { enableGestures: true }
+    if (channelId) {
+        quickAccessChannelId = channelId;
+        const channel = ChannelStore?.getChannel?.(channelId);
+
+        if (channel) {
+            const guildId = channel.guild_id;
+            const permissions = getChannelPermissions(channel, guildId);
+            const channelName = channel.name || "Unknown";
+
+            // Copy channel ID
+            safeClipboardCopy(channelId);
+
+            // Build info summary
+            const roles = permissions.overwrites.filter(o => o.type === 'role');
+            const users = permissions.overwrites.filter(o => o.type === 'user');
+            // Check if channel has denied VIEW_CHANNEL for @everyone
+            const isHiddenChannel = permissions.overwrites.some(o =>
+                o.name === '@everyone' && o.denied.some(p => p.includes('VIEW'))
             );
-            debugLog("NAV", "✅ Dashboard opened via openLazy");
-        } catch (e) {
-            debugLog("ERROR", `openLazy failed: ${e}`);
-            showToast("📱 Go to: Settings → Plugins → Stalker Pro", getAssetIDByName("Check"));
+
+            let info = `🔍 #${channelName}\n`;
+            info += `📋 ID copied: ${channelId}\n`;
+            info += isHiddenChannel ? `🔒 HIDDEN CHANNEL\n` : '';
+            info += `👥 Access: ${roles.length} roles, ${users.length} users\n`;
+
+            if (roles.length > 0) {
+                info += `Roles: ${roles.slice(0, 3).map(r => r.name).join(', ')}`;
+                if (roles.length > 3) info += `... +${roles.length - 3}`;
+            }
+
+            showToast(info, getAssetIDByName("Check"));
+
+            // Log all permissions for debug
+            permissions.overwrites.forEach(ow => {
+                const allowed = ow.allowed.slice(0, 3).map(p => `✅${p}`).join(' ');
+                const denied = ow.denied.slice(0, 3).map(p => `❌${p}`).join(' ');
+                debugLog("PERMS", `${ow.type === 'role' ? '🏷️' : '👤'} ${ow.name}: ${allowed} ${denied}`);
+            });
+
+            debugLog("NAV", "✅ Quick info shown, ID copied, check Debug tab for details");
+        } else {
+            showToast("❌ Channel not found", getAssetIDByName("Small"));
         }
     } else {
-        debugLog("NAV", "❌ ActionSheet.openLazy not available");
-        showToast("📱 Go to: Settings → Plugins → Stalker Pro", getAssetIDByName("Check"));
+        // No channel context - just show instructions
+        showToast("📱 Go to: Settings → Plugins → Stalker Pro\n\nOr long-press a channel for quick info!", getAssetIDByName("Check"));
     }
 }
 
@@ -701,7 +689,7 @@ function StalkerSettings() {
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         React.createElement(View, { key: 'h', style: { padding: 10, backgroundColor: '#2b2d31', marginBottom: 6 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v6.0-dev"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v6.1-dev"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, textAlign: 'center' } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
@@ -911,7 +899,7 @@ function openDashboardWithContext(type: 'user' | 'channel', id: string) {
 }
 
 export const onLoad = () => {
-    debugLog("LOAD", "=== STALKER PRO v6.0-dev ===");
+    debugLog("LOAD", "=== STALKER PRO v6.1-dev ===");
 
     // Check if Modal is available
     debugLog("INIT", `Modal available: ${!!Modal}`);
@@ -1044,11 +1032,11 @@ export const onLoad = () => {
                                 borderColor: '#5865F2',
                             },
                             onPress: () => {
-                                debugLog("ACTION", `Stalker button pressed`);
+                                debugLog("ACTION", `Stalker button pressed for ${channelId}`);
                                 ActionSheet?.hideActionSheet?.();
                                 // Small delay to let the current sheet close
                                 setTimeout(() => {
-                                    openStalkerDashboard();
+                                    openStalkerDashboard(channelId);
                                 }, 100);
                             }
                         },
@@ -1056,7 +1044,7 @@ export const onLoad = () => {
                             React.createElement(Text, { key: "icon", style: { fontSize: 18, marginRight: 12 } }, "🔍"),
                             React.createElement(View, { key: "txt", style: { flex: 1 } }, [
                                 React.createElement(Text, { key: "t1", style: { color: '#fff', fontSize: 15, fontWeight: 'bold' } }, "Stalker Pro"),
-                                React.createElement(Text, { key: "t2", style: { color: '#b5bac1', fontSize: 11 } }, "Open Dashboard")
+                                React.createElement(Text, { key: "t2", style: { color: '#b5bac1', fontSize: 11 } }, "Quick Info + Copy ID")
                             ]),
                             React.createElement(Text, { key: "arrow", style: { color: '#5865F2', fontSize: 14 } }, "→")
                         ]
