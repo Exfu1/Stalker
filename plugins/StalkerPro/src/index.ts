@@ -9,6 +9,9 @@ import { after } from "@vendetta/patcher";
 const { FormSection, FormRow, FormInput, FormSwitchRow } = Forms;
 const { ScrollView, View, Text, TouchableOpacity, TextInput } = General;
 
+// BackHandler for navigation
+const BackHandler = ReactNative?.BackHandler || findByProps("addEventListener", "removeEventListener", "exitApp");
+
 // Discord stores
 const UserStore = findByStoreName("UserStore");
 const GuildStore = findByStoreName("GuildStore");
@@ -412,7 +415,7 @@ function StalkerSettings() {
 
     const [, forceUpdate] = React.useState(0);
 
-    // Mark dashboard as open/closed
+    // Mark dashboard as open/closed + handle back button
     React.useEffect(() => {
         isDashboardOpen = true;
         logger.log("Dashboard opened - auto-search paused");
@@ -420,11 +423,30 @@ function StalkerSettings() {
         const guildId = SelectedGuildStore?.getGuildId?.();
         if (guildId) setSelectedGuild(GuildStore?.getGuild?.(guildId));
 
+        // Back button handler
+        const backHandler = BackHandler?.addEventListener?.("hardwareBackPress", () => {
+            // If viewing a channel's permissions, go back to list
+            if (selectedChannel) {
+                setSelectedChannel(null);
+                // Go back to previous tab if we were on perms
+                if (activeTab === 'perms') setActiveTab('hidden');
+                return true; // Handled
+            }
+            // If on a secondary tab, go back to hidden
+            if (activeTab !== 'hidden') {
+                setActiveTab('hidden');
+                return true; // Handled
+            }
+            // On hidden tab with nothing selected - let default back behavior (exit)
+            return false;
+        });
+
         return () => {
             isDashboardOpen = false;
             logger.log("Dashboard closed - auto-search resumed");
+            backHandler?.remove?.();
         };
-    }, []);
+    }, [selectedChannel, activeTab]);
 
     // Re-fetch permissions when channel selected
     React.useEffect(() => {
