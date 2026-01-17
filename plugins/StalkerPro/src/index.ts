@@ -812,7 +812,7 @@ function StalkerSettings() {
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         React.createElement(View, { key: 'h', style: { padding: 10, backgroundColor: '#2b2d31', marginBottom: 6 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v7.4-dev"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v7.5-dev"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, textAlign: 'center' } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
@@ -1022,7 +1022,7 @@ function openDashboardWithContext(type: 'user' | 'channel', id: string) {
 }
 
 export const onLoad = () => {
-    debugLog("LOAD", "=== STALKER PRO v7.4-dev ===");
+    debugLog("LOAD", "=== STALKER PRO v7.5-dev ===");
 
     // Check if Modal is available
     debugLog("INIT", `Modal available: ${!!Modal}`);
@@ -1136,92 +1136,44 @@ export const onLoad = () => {
                     const channelName = channel?.name || "this channel";
 
                     debugLog("INJECT", `Wrapping with button for: ${channelName} (${channelId})`);
-                    debugLog("INJECT", `FinalActionSheetRow available: ${!!FinalActionSheetRow}`);
 
-                    let stalkerButton;
-
-                    // Use native-backed ActionSheetRow if available (gesture-aware)
-                    if (FinalActionSheetRow) {
-                        // Log sub-component structure
-                        if (FinalActionSheetRow.Icon) {
-                            debugLog("INJECT", `ActionSheetRow.Icon available: ${typeof FinalActionSheetRow.Icon}`);
-                        }
-                        if (FinalActionSheetRow.Group) {
-                            debugLog("INJECT", `ActionSheetRow.Group available: ${typeof FinalActionSheetRow.Group}`);
-                        }
-
-                        // Try compound component pattern - wrap content in ActionSheetRow
-                        // ActionSheetRow might be a Pressable-like wrapper
-                        stalkerButton = React.createElement(
-                            FinalActionSheetRow,
-                            {
-                                key: "stalker-action",
-                                // Try different prop names for the press handler
-                                onPress: () => {
-                                    debugLog("ACTION", `onPress fired for ${channelId}`);
-                                    ActionSheet?.hideActionSheet?.();
-                                    setTimeout(() => openStalkerDashboard(channelId), 100);
-                                },
-                                onPressRow: () => {
-                                    debugLog("ACTION", `onPressRow fired for ${channelId}`);
-                                    ActionSheet?.hideActionSheet?.();
-                                    setTimeout(() => openStalkerDashboard(channelId), 100);
-                                },
-                                action: () => {
-                                    debugLog("ACTION", `action fired for ${channelId}`);
-                                    ActionSheet?.hideActionSheet?.();
-                                    setTimeout(() => openStalkerDashboard(channelId), 100);
-                                },
+                    // ALWAYS use TouchableOpacity - it works!
+                    // ActionSheetRow is just a layout container, not touchable
+                    const stalkerButton = React.createElement(
+                        TouchableOpacity,
+                        {
+                            key: "stalker-action",
+                            style: {
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                paddingVertical: 14,
+                                paddingHorizontal: 20,
+                                backgroundColor: '#2b2d31',
+                                marginHorizontal: 12,
+                                marginTop: 8,
+                                marginBottom: 12,
+                                borderRadius: 12,
+                                borderWidth: 1,
+                                borderColor: '#5865F2',
                             },
-                            // Children - the row content
-                            [
-                                React.createElement(Text, { key: "icon", style: { fontSize: 18, marginRight: 12 } }, "🔍"),
-                                React.createElement(View, { key: "content", style: { flex: 1 } }, [
-                                    React.createElement(Text, { key: "t1", style: { color: '#fff', fontSize: 15, fontWeight: 'bold' } }, "Stalker Pro Dashboard"),
-                                    React.createElement(Text, { key: "t2", style: { color: '#b5bac1', fontSize: 11 } }, `Analyze #${channelName}`)
-                                ]),
-                                React.createElement(Text, { key: "arrow", style: { color: '#5865F2', fontSize: 14 } }, "→")
-                            ]
-                        );
-                        debugLog("INJECT", "Using ActionSheetRow with children pattern");
-                    } else {
-                        // Fallback to TouchableOpacity if ActionSheetRow not found
-                        stalkerButton = React.createElement(
-                            TouchableOpacity,
-                            {
-                                key: "stalker-action",
-                                style: {
-                                    flexDirection: 'row',
-                                    alignItems: 'center',
-                                    paddingVertical: 14,
-                                    paddingHorizontal: 20,
-                                    backgroundColor: '#2b2d31',
-                                    marginHorizontal: 12,
-                                    marginTop: 8,
-                                    marginBottom: 12,
-                                    borderRadius: 12,
-                                    borderWidth: 1,
-                                    borderColor: '#5865F2',
-                                },
-                                onPress: () => {
-                                    debugLog("ACTION", `TouchableOpacity pressed for ${channelId}`);
-                                    ActionSheet?.hideActionSheet?.();
-                                    setTimeout(() => {
-                                        openStalkerDashboard(channelId);
-                                    }, 100);
-                                }
-                            },
-                            [
-                                React.createElement(Text, { key: "icon", style: { fontSize: 18, marginRight: 12 } }, "🔍"),
-                                React.createElement(View, { key: "txt", style: { flex: 1 } }, [
-                                    React.createElement(Text, { key: "t1", style: { color: '#fff', fontSize: 15, fontWeight: 'bold' } }, "Stalker Pro"),
-                                    React.createElement(Text, { key: "t2", style: { color: '#b5bac1', fontSize: 11 } }, "Open Dashboard")
-                                ]),
-                                React.createElement(Text, { key: "arrow", style: { color: '#5865F2', fontSize: 14 } }, "→")
-                            ]
-                        );
-                        debugLog("INJECT", "Using TouchableOpacity fallback (gesture conflict possible)");
-                    }
+                            onPress: () => {
+                                debugLog("ACTION", `Button pressed for ${channelId}`);
+                                ActionSheet?.hideActionSheet?.();
+                                setTimeout(() => {
+                                    openStalkerDashboard(channelId);
+                                }, 100);
+                            }
+                        },
+                        [
+                            React.createElement(Text, { key: "icon", style: { fontSize: 18, marginRight: 12 } }, "🔍"),
+                            React.createElement(View, { key: "txt", style: { flex: 1 } }, [
+                                React.createElement(Text, { key: "t1", style: { color: '#fff', fontSize: 15, fontWeight: 'bold' } }, "Stalker Pro"),
+                                React.createElement(Text, { key: "t2", style: { color: '#b5bac1', fontSize: 11 } }, `Quick Info #${channelName}`)
+                            ]),
+                            React.createElement(Text, { key: "arrow", style: { color: '#5865F2', fontSize: 14 } }, "→")
+                        ]
+                    );
+                    debugLog("INJECT", "Using TouchableOpacity");
 
                     // Return a wrapper that includes both the original and our button
                     return React.createElement(
