@@ -449,14 +449,62 @@ function formatTimeAgo(timestamp: string): string {
 // ========================================
 
 function openStalkerDashboard() {
-    debugLog("NAV", "Opening Stalker popup dashboard...");
+    debugLog("NAV", "Opening Stalker dashboard via ActionSheet...");
 
-    // Use global setter to show popup
-    if (setShowDashboardPopup) {
-        setShowDashboardPopup(true);
-        debugLog("NAV", "✅ Popup dashboard activated");
+    // Create a wrapper component for the dashboard
+    const DashboardSheet = () => {
+        return React.createElement(View, {
+            style: {
+                backgroundColor: '#1e1f22',
+                maxHeight: 600,
+                borderTopLeftRadius: 12,
+                borderTopRightRadius: 12,
+                overflow: 'hidden'
+            }
+        }, [
+            // Header with close button
+            React.createElement(View, {
+                key: 'hdr',
+                style: {
+                    flexDirection: 'row',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: 12,
+                    backgroundColor: '#2b2d31',
+                    borderBottomWidth: 1,
+                    borderBottomColor: '#1e1f22'
+                }
+            }, [
+                React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold' } }, "🔍 Stalker Pro Dashboard"),
+                React.createElement(TouchableOpacity, {
+                    key: 'close',
+                    style: { padding: 8, backgroundColor: '#ed4245', borderRadius: 6 },
+                    onPress: () => {
+                        debugLog("NAV", "Closing dashboard sheet");
+                        ActionSheet?.hideActionSheet?.();
+                    }
+                }, React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold', fontSize: 12 } }, "✕"))
+            ]),
+            // Dashboard content - render StalkerSettings inline
+            React.createElement(StalkerSettings, { key: 'content' })
+        ]);
+    };
+
+    // Try to open using ActionSheet.openLazy
+    if (ActionSheet?.openLazy) {
+        try {
+            ActionSheet.openLazy(
+                Promise.resolve({ default: DashboardSheet }),
+                "StalkerDashboard",
+                { enableGestures: true }
+            );
+            debugLog("NAV", "✅ Dashboard opened via openLazy");
+        } catch (e) {
+            debugLog("ERROR", `openLazy failed: ${e}`);
+            showToast("📱 Go to: Settings → Plugins → Stalker Pro", getAssetIDByName("Check"));
+        }
     } else {
-        debugLog("NAV", "❌ Popup not ready - fallback to toast");
+        debugLog("NAV", "❌ ActionSheet.openLazy not available");
         showToast("📱 Go to: Settings → Plugins → Stalker Pro", getAssetIDByName("Check"));
     }
 }
@@ -647,7 +695,7 @@ function StalkerSettings() {
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         React.createElement(View, { key: 'h', style: { padding: 10, backgroundColor: '#2b2d31', marginBottom: 6 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v5.8-dev"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v5.9-dev"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, textAlign: 'center' } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
