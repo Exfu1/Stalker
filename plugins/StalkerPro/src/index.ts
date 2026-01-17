@@ -59,20 +59,27 @@ function clearDebugLogs() {
 // Try to find various modules for patching
 debugLog("INIT", "Starting module discovery...");
 
-// User Profile modules
+// User Profile modules - try multiple approaches
 const UserProfileHeader = findByName("UserProfileHeader", false);
 const UserProfileActions = findByProps("UserProfileActions")?.UserProfileActions;
 const UserProfileSection = findByName("UserProfileSection", false);
 const ProfileBanner = findByName("ProfileBanner", false);
 
-// Channel context menu modules
-const ChannelContextMenu = findByName("ChannelContextMenu", false);
+// Channel context menu modules - try different names
 const ChannelLongPress = findByName("ChannelLongPressActionSheet", false);
+const ChannelLongPress2 = findByName("ChannelLongPress", false);
+const ChannelContextMenu = findByName("ChannelContextMenu", false);
 const ContextMenu = findByProps("openContextMenu", "closeContextMenu");
+
+// Try to find by props as well
+const ChannelActionSheet = findByProps("ChannelLongPressActionSheet");
+const LazyActionSheet = findByProps("openLazy", "hideActionSheet");
 
 // Action sheet modules
 const ActionSheet = findByProps("openLazy", "hideActionSheet");
 const ActionSheetRow = findByName("ActionSheetRow", false);
+const ActionSheetTitleHeader = findByName("ActionSheetTitleHeader", false);
+const ActionSheetCloseButton = findByName("ActionSheetCloseButton", false);
 
 // Navigation
 const NavigationNative = findByProps("NavigationContainer")?.default;
@@ -82,17 +89,44 @@ const useNavigation = findByProps("useNavigation")?.useNavigation;
 // Commands module
 const Commands = findByProps("registerCommand", "unregisterCommand");
 
+// Log what we found - with more detail
 debugLog("INIT", `UserProfileHeader: ${!!UserProfileHeader}`);
-debugLog("INIT", `UserProfileActions: ${!!UserProfileActions}`);
 debugLog("INIT", `UserProfileSection: ${!!UserProfileSection}`);
 debugLog("INIT", `ProfileBanner: ${!!ProfileBanner}`);
-debugLog("INIT", `ChannelContextMenu: ${!!ChannelContextMenu}`);
 debugLog("INIT", `ChannelLongPress: ${!!ChannelLongPress}`);
-debugLog("INIT", `ContextMenu: ${!!ContextMenu}`);
+debugLog("INIT", `ChannelLongPress2: ${!!ChannelLongPress2}`);
+debugLog("INIT", `ChannelActionSheet: ${!!ChannelActionSheet}`);
 debugLog("INIT", `ActionSheet: ${!!ActionSheet}`);
-debugLog("INIT", `ActionSheetRow: ${!!ActionSheetRow}`);
-debugLog("INIT", `useNavigation: ${!!useNavigation}`);
 debugLog("INIT", `Commands: ${!!Commands}`);
+
+// Log module keys to find correct patch targets
+if (ChannelLongPress) {
+    try {
+        const keys = Object.keys(ChannelLongPress);
+        debugLog("KEYS", `ChannelLongPress keys: ${keys.join(', ') || 'none'}`);
+        if (typeof ChannelLongPress === 'function') {
+            debugLog("KEYS", "ChannelLongPress is a function");
+        }
+    } catch (e) { debugLog("ERROR", `Keys read failed: ${e}`); }
+}
+
+if (UserProfileSection) {
+    try {
+        const keys = Object.keys(UserProfileSection);
+        debugLog("KEYS", `UserProfileSection keys: ${keys.join(', ') || 'none'}`);
+        if (typeof UserProfileSection === 'function') {
+            debugLog("KEYS", "UserProfileSection is a function");
+        }
+    } catch (e) { debugLog("ERROR", `Keys read failed: ${e}`); }
+}
+
+if (ActionSheet) {
+    try {
+        const keys = Object.keys(ActionSheet);
+        debugLog("KEYS", `ActionSheet keys: ${keys.join(', ') || 'none'}`);
+    } catch (e) { debugLog("ERROR", `Keys read failed: ${e}`); }
+}
+
 
 // Permission constants
 const VIEW_CHANNEL = constants?.Permissions?.VIEW_CHANNEL || 1024;
@@ -564,7 +598,7 @@ function StalkerSettings() {
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         React.createElement(View, { key: 'h', style: { padding: 10, backgroundColor: '#2b2d31', marginBottom: 6 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v5.0-dev"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v5.2-dev"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, textAlign: 'center' } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
@@ -708,7 +742,7 @@ function openDashboardWithContext(type: 'user' | 'channel', id: string) {
 }
 
 export const onLoad = () => {
-    debugLog("LOAD", "=== STALKER PRO v5.1-dev ===");
+    debugLog("LOAD", "=== STALKER PRO v5.2-dev ===");
 
     // Patch Permissions.can
     if (Permissions?.can) {
