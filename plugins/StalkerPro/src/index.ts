@@ -4,7 +4,7 @@ import { React, ReactNative, constants, FluxDispatcher } from "@vendetta/metro/c
 import { Forms, General } from "@vendetta/ui/components";
 import { getAssetIDByName } from "@vendetta/ui/assets";
 import { showToast } from "@vendetta/ui/toasts";
-import { after } from "@vendetta/patcher";
+import { after, before } from "@vendetta/patcher";
 
 const { FormSection, FormRow, FormInput, FormSwitchRow } = Forms;
 const { ScrollView, View, Text, TouchableOpacity, TextInput } = General;
@@ -30,6 +30,70 @@ const ChannelTypes = findByProps("ChannelTypes")?.ChannelTypes || {};
 const Clipboard = ReactNative?.Clipboard || findByProps("setString", "getString");
 const RestAPI = findByProps("getAPIBaseURL", "get") || findByProps("API_HOST", "get");
 
+// ========================================
+// DEBUG LOG SYSTEM
+// ========================================
+let debugLogs: string[] = [];
+const MAX_DEBUG_LOGS = 50;
+
+function debugLog(category: string, message: string) {
+    const timestamp = new Date().toLocaleTimeString();
+    const entry = `[${timestamp}] [${category}] ${message}`;
+    debugLogs.unshift(entry); // Add to front
+    if (debugLogs.length > MAX_DEBUG_LOGS) debugLogs.pop();
+    logger.log(entry);
+}
+
+function getDebugLogs(): string[] {
+    return debugLogs;
+}
+
+function clearDebugLogs() {
+    debugLogs = [];
+}
+
+// ========================================
+// MODULES FOR QUICK ACCESS
+// ========================================
+
+// Try to find various modules for patching
+debugLog("INIT", "Starting module discovery...");
+
+// User Profile modules
+const UserProfileHeader = findByName("UserProfileHeader", false);
+const UserProfileActions = findByProps("UserProfileActions")?.UserProfileActions;
+const UserProfileSection = findByName("UserProfileSection", false);
+const ProfileBanner = findByName("ProfileBanner", false);
+
+// Channel context menu modules
+const ChannelContextMenu = findByName("ChannelContextMenu", false);
+const ChannelLongPress = findByName("ChannelLongPressActionSheet", false);
+const ContextMenu = findByProps("openContextMenu", "closeContextMenu");
+
+// Action sheet modules
+const ActionSheet = findByProps("openLazy", "hideActionSheet");
+const ActionSheetRow = findByName("ActionSheetRow", false);
+
+// Navigation
+const NavigationNative = findByProps("NavigationContainer")?.default;
+const NavigationStack = findByProps("createStackNavigator");
+const useNavigation = findByProps("useNavigation")?.useNavigation;
+
+// Commands module
+const Commands = findByProps("registerCommand", "unregisterCommand");
+
+debugLog("INIT", `UserProfileHeader: ${!!UserProfileHeader}`);
+debugLog("INIT", `UserProfileActions: ${!!UserProfileActions}`);
+debugLog("INIT", `UserProfileSection: ${!!UserProfileSection}`);
+debugLog("INIT", `ProfileBanner: ${!!ProfileBanner}`);
+debugLog("INIT", `ChannelContextMenu: ${!!ChannelContextMenu}`);
+debugLog("INIT", `ChannelLongPress: ${!!ChannelLongPress}`);
+debugLog("INIT", `ContextMenu: ${!!ContextMenu}`);
+debugLog("INIT", `ActionSheet: ${!!ActionSheet}`);
+debugLog("INIT", `ActionSheetRow: ${!!ActionSheetRow}`);
+debugLog("INIT", `useNavigation: ${!!useNavigation}`);
+debugLog("INIT", `Commands: ${!!Commands}`);
+
 // Permission constants
 const VIEW_CHANNEL = constants?.Permissions?.VIEW_CHANNEL || 1024;
 
@@ -47,12 +111,15 @@ const PERMISSION_NAMES: { [key: number]: string } = {
 
 // Storage
 let clipboardMonitorActive = false;
-let autoSearchEnabled = true; // Toggle for auto-search
-let isDashboardOpen = false; // Track if dashboard is open
+let autoSearchEnabled = true;
+let isDashboardOpen = false;
 let lastCheckedClipboard = "";
 let checkIntervalId: any = null;
 let patches: (() => void)[] = [];
 let isActivelyScanning = false;
+
+// Quick access context - for opening dashboard with pre-filled data
+let quickAccessContext: { type: 'user' | 'channel' | null, id: string | null } = { type: null, id: null };
 
 const skipChannels = [ChannelTypes.DM, ChannelTypes.GROUP_DM, ChannelTypes.GUILD_CATEGORY];
 
@@ -77,7 +144,7 @@ interface PermissionOverwrite {
     allowed: string[];
     denied: string[];
     isUnknown: boolean;
-    isFetched: boolean; // Track if user data was successfully fetched
+    isFetched: boolean;
 }
 
 interface ChannelPermissions {
@@ -103,7 +170,6 @@ function requestGuildMembers(guildId: string, userIds: string[]) {
     if (!FluxDispatcher || userIds.length === 0) return;
     try {
         FluxDispatcher.dispatch({ type: "GUILD_MEMBERS_REQUEST", guildIds: [guildId], userIds });
-        logger.log(`Requested ${userIds.length} guild members`);
     } catch { }
 }
 
@@ -130,70 +196,49 @@ function getRoleName(roleId: string, guildId: string): { name: string, color: nu
     try {
         const guild = GuildStore?.getGuild?.(guildId);
         if (guild?.roles?.[roleId]) {
-            const role = guild.roles[roleId];
-            return { name: role.name, color: role.color || 0, found: true };
+            return { name: guild.roles[roleId].name, color: guild.roles[roleId].color || 0, found: true };
         }
     } catch { }
-
     try {
         if (GuildRoleStore) {
             const role = GuildRoleStore.getRole?.(guildId, roleId);
             if (role) return { name: role.name, color: role.color || 0, found: true };
-            const roles = GuildRoleStore.getRoles?.(guildId);
-            if (roles?.[roleId]) return { name: roles[roleId].name, color: roles[roleId].color || 0, found: true };
         }
     } catch { }
-
     return { name: `Role ID: ${roleId}`, color: 0x5865F2, found: false };
 }
 
-// Get user info with better handling
 function getUserDisplayName(userId: string, guildId: string): { name: string, isFetched: boolean } {
     const user = UserStore?.getUser?.(userId);
     const member = GuildMemberStore?.getMember?.(guildId, userId);
-
     if (user) {
-        const name = member?.nick || user.globalName || user.username;
-        return { name, isFetched: true };
+        return { name: member?.nick || user.globalName || user.username, isFetched: true };
     }
-
-    // Not in cache - show ID with indicator
     return { name: `User ID: ${userId}`, isFetched: false };
 }
 
 function getChannelPermissions(channel: any, guildId: string): ChannelPermissions {
     const overwrites: PermissionOverwrite[] = [];
     const userIds: string[] = [];
-
     try {
         const rawOverwrites = channel.permissionOverwrites || {};
-
         for (const [id, ow] of Object.entries(rawOverwrites) as any[]) {
             if (!ow) continue;
             const allow = Number(ow.allow || 0);
             const deny = Number(ow.deny || 0);
             const isRole = ow.type === 0 || ow.type === "role";
             const type = isRole ? 'role' : 'user';
-
             let name = "", color = 0, isUnknown = false, isFetched = true;
-
             if (isRole) {
                 if (id === guildId) { name = "@everyone"; color = 0x99AAB5; }
-                else {
-                    const roleInfo = getRoleName(id, guildId);
-                    name = roleInfo.name; color = roleInfo.color; isUnknown = !roleInfo.found;
-                }
+                else { const r = getRoleName(id, guildId); name = r.name; color = r.color; isUnknown = !r.found; }
             } else {
                 userIds.push(id);
-                const userInfo = getUserDisplayName(id, guildId);
-                name = userInfo.name;
-                isFetched = userInfo.isFetched;
-                isUnknown = !isFetched;
+                const u = getUserDisplayName(id, guildId);
+                name = u.name; isFetched = u.isFetched; isUnknown = !isFetched;
             }
-
             overwrites.push({ id, name, type, color, allowed: parsePermissionBits(allow), denied: parsePermissionBits(deny), isUnknown, isFetched });
         }
-
         overwrites.sort((a, b) => {
             if (a.name === "@everyone") return -1;
             if (b.name === "@everyone") return 1;
@@ -214,74 +259,40 @@ function getChannelTypeName(type: number): string {
 
 function getAllGuildChannels(guildId: string): any[] {
     const channelMap = new Map<string, any>();
-
     try {
-        const method1 = ChannelStore?.getMutableGuildChannelsForGuild?.(guildId);
-        if (method1) {
-            const channels = Array.isArray(method1) ? method1 : Object.values(method1);
-            for (const ch of channels) { if (ch?.id) channelMap.set(ch.id, ch); }
-        }
+        const m1 = ChannelStore?.getMutableGuildChannelsForGuild?.(guildId);
+        if (m1) { for (const ch of (Array.isArray(m1) ? m1 : Object.values(m1))) { if (ch?.id) channelMap.set(ch.id, ch); } }
     } catch { }
-
     try {
-        const allChannels = ChannelStore?.getMutableGuildChannels?.();
-        if (allChannels) {
-            for (const ch of Object.values(allChannels) as any[]) {
-                if (ch?.guild_id === guildId && ch?.id) channelMap.set(ch.id, ch);
-            }
-        }
+        const all = ChannelStore?.getMutableGuildChannels?.();
+        if (all) { for (const ch of Object.values(all) as any[]) { if (ch?.guild_id === guildId && ch?.id) channelMap.set(ch.id, ch); } }
     } catch { }
-
     try {
         if (GuildChannelStore?.getChannels) {
-            const result = GuildChannelStore.getChannels(guildId);
-            if (result) {
-                const processChannels = (arr: any[]) => {
-                    if (!Array.isArray(arr)) return;
-                    for (const item of arr) {
-                        const ch = item?.channel || item;
-                        if (ch?.id) channelMap.set(ch.id, ch);
-                    }
-                };
-                if (Array.isArray(result)) processChannels(result);
-                else {
-                    for (const key of Object.keys(result)) {
-                        if (Array.isArray(result[key])) processChannels(result[key]);
-                    }
-                }
+            const r = GuildChannelStore.getChannels(guildId);
+            if (r) {
+                const proc = (arr: any[]) => { if (Array.isArray(arr)) { for (const i of arr) { const ch = i?.channel || i; if (ch?.id) channelMap.set(ch.id, ch); } } };
+                if (Array.isArray(r)) proc(r);
+                else { for (const k of Object.keys(r)) { if (Array.isArray(r[k])) proc(r[k]); } }
             }
         }
     } catch { }
-
     return Array.from(channelMap.values());
 }
 
 function getHiddenChannels(guildId: string): HiddenChannel[] {
     const hidden: HiddenChannel[] = [];
     isActivelyScanning = true;
-
     try {
         const channels = getAllGuildChannels(guildId);
         for (const channel of channels) {
-            if (!channel?.id) continue;
-            if (channel.type === 4 || channel.type === 1 || channel.type === 3) continue;
-            if (channel.type === 11 || channel.type === 12) continue;
-            if (skipChannels.includes(channel.type)) continue;
-
+            if (!channel?.id || channel.type === 4 || channel.type === 1 || channel.type === 3 || channel.type === 11 || channel.type === 12 || skipChannels.includes(channel.type)) continue;
             if (isHidden(channel)) {
-                hidden.push({
-                    id: channel.id,
-                    name: channel.name || "unknown",
-                    type: channel.type || 0,
-                    parentName: channel.parent_id ? (ChannelStore?.getChannel?.(channel.parent_id)?.name || "") : "",
-                    permissions: getChannelPermissions(channel, guildId),
-                    guildId
-                });
+                hidden.push({ id: channel.id, name: channel.name || "unknown", type: channel.type || 0, parentName: channel.parent_id ? (ChannelStore?.getChannel?.(channel.parent_id)?.name || "") : "", permissions: getChannelPermissions(channel, guildId), guildId });
             }
         }
-    } catch (e) { logger.error("getHiddenChannels error:", e); }
+    } catch (e) { debugLog("ERROR", `getHiddenChannels: ${e}`); }
     finally { isActivelyScanning = false; }
-
     return hidden.sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -306,9 +317,7 @@ function getUserAccessibleHiddenChannels(userId: string, guildId: string): Hidde
 
 function getMutualGuilds(userId: string) {
     if (!GuildStore || !GuildMemberStore) return [];
-    try {
-        return (Object.values(GuildStore.getGuilds() || {}) as any[]).filter(g => GuildMemberStore.getMember(g.id, userId));
-    } catch { return []; }
+    try { return (Object.values(GuildStore.getGuilds() || {}) as any[]).filter(g => GuildMemberStore.getMember(g.id, userId)); } catch { return []; }
 }
 
 async function searchMessagesInGuild(guildId: string, authorId: string): Promise<SearchMessage[]> {
@@ -316,16 +325,17 @@ async function searchMessagesInGuild(guildId: string, authorId: string): Promise
     try {
         const res = await RestAPI.get({ url: `/guilds/${guildId}/messages/search`, query: { author_id: authorId, include_nsfw: true, sort_by: "timestamp", sort_order: "desc" } });
         const guildName = GuildStore?.getGuild?.(guildId)?.name || "Unknown Server";
-        return (res?.body?.messages || []).map((m: any[]) => ({
-            id: m[0].id,
-            content: m[0].content || "[No text content]",
-            channelId: m[0].channel_id,
-            channelName: ChannelStore?.getChannel?.(m[0].channel_id)?.name || "unknown",
-            guildId,
-            guildName,
-            timestamp: m[0].timestamp
-        }));
+        return (res?.body?.messages || []).map((m: any[]) => ({ id: m[0].id, content: m[0].content || "[No text]", channelId: m[0].channel_id, channelName: ChannelStore?.getChannel?.(m[0].channel_id)?.name || "unknown", guildId, guildName, timestamp: m[0].timestamp }));
     } catch { return []; }
+}
+
+function safeClipboardCopy(text: string) {
+    if (Clipboard?.setString) { Clipboard.setString(text); lastCheckedClipboard = text; return true; }
+    return false;
+}
+
+function copyId(id: string, type: 'role' | 'user') {
+    if (safeClipboardCopy(id)) { showToast(`📋 ${type === 'role' ? 'Role' : 'User'} ID copied!`, getAssetIDByName("Check")); }
 }
 
 async function autoSearchUser(userId: string) {
@@ -334,27 +344,21 @@ async function autoSearchUser(userId: string) {
     const guilds = getMutualGuilds(userId);
     if (guilds.length === 0) { showToast("❌ No mutual servers", getAssetIDByName("Small")); return; }
     showToast(`🔍 Searching...`, getAssetIDByName("ic_search"));
-
     let allMsgs: SearchMessage[] = [];
     for (let i = 0; i < Math.min(guilds.length, 8); i++) {
         try { allMsgs.push(...await searchMessagesInGuild(guilds[i].id, userId)); } catch { }
         if (i < guilds.length - 1) await new Promise(r => setTimeout(r, 250));
     }
     allMsgs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-
     if (allMsgs.length === 0) { showToast(`📭 No messages`, getAssetIDByName("Small")); return; }
-
     const latest = allMsgs[0];
     const link = `https://discord.com/channels/${latest.guildId}/${latest.channelId}/${latest.id}`;
-
     showToast(`✅ Found ${allMsgs.length}!`, getAssetIDByName("Check"));
     setTimeout(() => { if (safeClipboardCopy(link)) { showToast(`📋 Copied latest!`, getAssetIDByName("Check")); } }, 1500);
 }
 
 async function checkClipboardContent() {
-    // Don't check if dashboard is open or auto-search is disabled
     if (isDashboardOpen || !autoSearchEnabled) return;
-
     try {
         if (!Clipboard?.getString) return;
         const content = await Clipboard.getString();
@@ -374,91 +378,78 @@ function formatTimeAgo(timestamp: string): string {
     return `${m}m ago`;
 }
 
-// Safe clipboard copy - always update lastCheckedClipboard to prevent auto-search trigger
-function safeClipboardCopy(text: string) {
-    if (Clipboard?.setString) {
-        Clipboard.setString(text);
-        lastCheckedClipboard = text; // Prevent auto-search from triggering
-        return true;
-    }
-    return false;
-}
-
-// Copy ID with toast
-function copyId(id: string, type: 'role' | 'user') {
-    if (safeClipboardCopy(id)) {
-        showToast(`📋 ${type === 'role' ? 'Role' : 'User'} ID copied!`, getAssetIDByName("Check"));
-    }
-}
-
 // ========================================
 // SETTINGS UI
 // ========================================
 
 function StalkerSettings() {
-    const [activeTab, setActiveTab] = React.useState<'hidden' | 'perms' | 'user' | 'search'>('hidden');
+    const [activeTab, setActiveTab] = React.useState<'hidden' | 'perms' | 'user' | 'search' | 'debug'>('hidden');
     const [hiddenChannels, setHiddenChannels] = React.useState<HiddenChannel[]>([]);
     const [isScanning, setIsScanning] = React.useState(false);
     const [selectedGuild, setSelectedGuild] = React.useState<any>(null);
     const [selectedChannel, setSelectedChannel] = React.useState<HiddenChannel | null>(null);
     const [debugInfo, setDebugInfo] = React.useState("Tap 'Scan' to find hidden channels");
-
     const [lookupUserId, setLookupUserId] = React.useState("");
     const [userAccessChannels, setUserAccessChannels] = React.useState<HiddenChannel[]>([]);
     const [lookupUserInfo, setLookupUserInfo] = React.useState<any>(null);
     const [isLookingUp, setIsLookingUp] = React.useState(false);
-
     const [searchUserId, setSearchUserId] = React.useState("");
     const [isSearching, setIsSearching] = React.useState(false);
     const [searchResults, setSearchResults] = React.useState<SearchMessage[]>([]);
     const [autoSearchToggle, setAutoSearchToggle] = React.useState(autoSearchEnabled);
-
+    const [logs, setLogs] = React.useState<string[]>(getDebugLogs());
     const [, forceUpdate] = React.useState(0);
+
+    // Check for pre-filled context from quick access
+    React.useEffect(() => {
+        if (quickAccessContext.type === 'user' && quickAccessContext.id) {
+            setLookupUserId(quickAccessContext.id);
+            setActiveTab('user');
+            quickAccessContext = { type: null, id: null };
+        } else if (quickAccessContext.type === 'channel' && quickAccessContext.id) {
+            // Find channel and show perms
+            const guildId = SelectedGuildStore?.getGuildId?.();
+            if (guildId) {
+                const ch = ChannelStore?.getChannel?.(quickAccessContext.id);
+                if (ch) {
+                    const hc: HiddenChannel = {
+                        id: ch.id, name: ch.name, type: ch.type, parentName: "",
+                        permissions: getChannelPermissions(ch, guildId), guildId
+                    };
+                    setSelectedChannel(hc);
+                    setActiveTab('perms');
+                }
+            }
+            quickAccessContext = { type: null, id: null };
+        }
+    }, []);
 
     // Mark dashboard as open/closed + handle back button
     React.useEffect(() => {
         isDashboardOpen = true;
-        logger.log("Dashboard opened - auto-search paused");
-
         const guildId = SelectedGuildStore?.getGuildId?.();
         if (guildId) setSelectedGuild(GuildStore?.getGuild?.(guildId));
 
-        // Back button handler
         const backHandler = BackHandler?.addEventListener?.("hardwareBackPress", () => {
-            // If viewing a channel's permissions, go back to list
             if (selectedChannel) {
                 setSelectedChannel(null);
-                // Go back to previous tab if we were on perms
                 if (activeTab === 'perms') setActiveTab('hidden');
-                return true; // Handled
+                return true;
             }
-            // If on a secondary tab, go back to hidden
-            if (activeTab !== 'hidden') {
-                setActiveTab('hidden');
-                return true; // Handled
-            }
-            // On hidden tab with nothing selected - let default back behavior (exit)
+            if (activeTab !== 'hidden') { setActiveTab('hidden'); return true; }
             return false;
         });
 
-        return () => {
-            isDashboardOpen = false;
-            logger.log("Dashboard closed - auto-search resumed");
-            backHandler?.remove?.();
-        };
+        return () => { isDashboardOpen = false; backHandler?.remove?.(); };
     }, [selectedChannel, activeTab]);
 
-    // Re-fetch permissions when channel selected
     React.useEffect(() => {
         if (selectedChannel && selectedChannel.permissions.userIds.length > 0) {
             requestGuildMembers(selectedChannel.guildId, selectedChannel.permissions.userIds);
-            // Auto-refresh after delay to get user data
             const timer = setTimeout(() => {
                 if (selectedChannel && selectedGuild) {
                     const channel = ChannelStore?.getChannel?.(selectedChannel.id);
-                    if (channel) {
-                        setSelectedChannel({ ...selectedChannel, permissions: getChannelPermissions(channel, selectedGuild.id) });
-                    }
+                    if (channel) setSelectedChannel({ ...selectedChannel, permissions: getChannelPermissions(channel, selectedGuild.id) });
                 }
             }, 1500);
             return () => clearTimeout(timer);
@@ -466,21 +457,16 @@ function StalkerSettings() {
     }, [selectedChannel?.id]);
 
     const scanCurrentGuild = () => {
-        setIsScanning(true);
-        setHiddenChannels([]);
+        setIsScanning(true); setHiddenChannels([]);
         try {
             const guildId = SelectedGuildStore?.getGuildId?.();
             if (guildId) {
-                const guild = GuildStore?.getGuild?.(guildId);
-                setSelectedGuild(guild);
+                setSelectedGuild(GuildStore?.getGuild?.(guildId));
                 const channels = getHiddenChannels(guildId);
                 setHiddenChannels(channels);
                 setDebugInfo(`Scanned → ${channels.length} hidden`);
                 showToast(channels.length > 0 ? `🔒 ${channels.length} hidden!` : `✨ No hidden`, getAssetIDByName("Check"));
-            } else {
-                setSelectedGuild(null);
-                setDebugInfo("Open a server first");
-            }
+            } else { setSelectedGuild(null); setDebugInfo("Open a server first"); }
         } catch (e) { setDebugInfo(`Error: ${e}`); }
         finally { setIsScanning(false); }
     };
@@ -490,10 +476,7 @@ function StalkerSettings() {
             requestGuildMembers(selectedGuild.id, selectedChannel.permissions.userIds);
             setTimeout(() => {
                 const channel = ChannelStore?.getChannel?.(selectedChannel.id);
-                if (channel) {
-                    setSelectedChannel({ ...selectedChannel, permissions: getChannelPermissions(channel, selectedGuild.id) });
-                    showToast("🔄 Refreshed!", getAssetIDByName("Check"));
-                }
+                if (channel) { setSelectedChannel({ ...selectedChannel, permissions: getChannelPermissions(channel, selectedGuild.id) }); showToast("🔄 Refreshed!", getAssetIDByName("Check")); }
             }, 500);
         }
     };
@@ -516,12 +499,9 @@ function StalkerSettings() {
     const handleManualSearch = async () => {
         const cleanId = searchUserId.trim();
         if (!cleanId || cleanId.length < 17) { showToast("Enter valid ID", getAssetIDByName("Small")); return; }
-        setIsSearching(true);
-        setSearchResults([]);
-
+        setIsSearching(true); setSearchResults([]);
         const guilds = getMutualGuilds(cleanId);
         if (guilds.length === 0) { showToast("❌ No mutual servers", getAssetIDByName("Small")); setIsSearching(false); return; }
-
         showToast(`🔍 Searching...`, getAssetIDByName("ic_search"));
         let allMsgs: SearchMessage[] = [];
         for (let i = 0; i < Math.min(guilds.length, 8); i++) {
@@ -529,8 +509,7 @@ function StalkerSettings() {
             if (i < guilds.length - 1) await new Promise(r => setTimeout(r, 250));
         }
         allMsgs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-        setSearchResults(allMsgs);
-        setIsSearching(false);
+        setSearchResults(allMsgs); setIsSearching(false);
         showToast(allMsgs.length > 0 ? `✅ ${allMsgs.length} messages!` : `📭 No messages`, getAssetIDByName("Check"));
     };
 
@@ -540,25 +519,18 @@ function StalkerSettings() {
     };
 
     const pasteFromClipboard = async (setter: (v: string) => void) => {
-        try {
-            const content = await Clipboard?.getString?.();
-            if (content) { setter(content.trim()); showToast("📋 Pasted!", getAssetIDByName("Check")); }
-        } catch { }
+        try { const c = await Clipboard?.getString?.(); if (c) { setter(c.trim()); showToast("📋 Pasted!", getAssetIDByName("Check")); } } catch { }
     };
 
-    const toggleAutoSearch = (val: boolean) => {
-        autoSearchEnabled = val;
-        setAutoSearchToggle(val);
-        showToast(val ? "✅ Auto-search enabled" : "❌ Auto-search disabled", getAssetIDByName("Check"));
-    };
+    const toggleAutoSearch = (val: boolean) => { autoSearchEnabled = val; setAutoSearchToggle(val); showToast(val ? "✅ Auto-search enabled" : "❌ Auto-search disabled", getAssetIDByName("Check")); };
 
     const roleColor = (c: number) => c ? `#${c.toString(16).padStart(6, '0')}` : '#99AAB5';
 
     const TabBtn = ({ id, label, icon }: any) =>
         React.createElement(TouchableOpacity, {
-            style: { flex: 1, padding: 8, backgroundColor: activeTab === id ? '#5865F2' : '#2b2d31', borderRadius: 8, marginHorizontal: 2 },
-            onPress: () => { setActiveTab(id); if (id !== 'perms') setSelectedChannel(null); }
-        }, React.createElement(Text, { style: { color: '#fff', textAlign: 'center', fontSize: 11, fontWeight: activeTab === id ? 'bold' : 'normal' } }, `${icon}${label}`));
+            style: { flex: 1, padding: 6, backgroundColor: activeTab === id ? '#5865F2' : '#2b2d31', borderRadius: 6, marginHorizontal: 1 },
+            onPress: () => { setActiveTab(id); if (id !== 'perms') setSelectedChannel(null); if (id === 'debug') setLogs(getDebugLogs()); }
+        }, React.createElement(Text, { style: { color: '#fff', textAlign: 'center', fontSize: 9, fontWeight: activeTab === id ? 'bold' : 'normal' } }, `${icon}${label}`));
 
     const ChannelCard = ({ ch, onPress }: { ch: HiddenChannel, onPress: () => void }) =>
         React.createElement(TouchableOpacity, { style: { margin: 6, padding: 10, backgroundColor: '#2b2d31', borderRadius: 10, borderLeftWidth: 3, borderLeftColor: '#5865F2' }, onPress }, [
@@ -572,17 +544,13 @@ function StalkerSettings() {
             ])
         ]);
 
-    // Interactive Role/User item
     const OverwriteItem = ({ ow }: { ow: PermissionOverwrite }) =>
-        React.createElement(TouchableOpacity, {
-            style: { margin: 4, marginHorizontal: 6, padding: 8, backgroundColor: '#2b2d31', borderRadius: 8, borderLeftWidth: 3, borderLeftColor: ow.type === 'role' ? roleColor(ow.color) : '#43b581' },
-            onPress: () => copyId(ow.id, ow.type)
-        }, [
+        React.createElement(TouchableOpacity, { style: { margin: 4, marginHorizontal: 6, padding: 8, backgroundColor: '#2b2d31', borderRadius: 8, borderLeftWidth: 3, borderLeftColor: ow.type === 'role' ? roleColor(ow.color) : '#43b581' }, onPress: () => copyId(ow.id, ow.type) }, [
             React.createElement(View, { key: 'hdr', style: { flexDirection: 'row', alignItems: 'center', marginBottom: 3 } }, [
                 React.createElement(Text, { key: 't', style: { fontSize: 11, marginRight: 4 } }, ow.type === 'role' ? '🏷️' : '👤'),
                 React.createElement(View, { key: 'nw', style: { flex: 1 } }, [
                     React.createElement(Text, { key: 'n', style: { color: ow.type === 'role' ? roleColor(ow.color) : '#43b581', fontSize: 12, fontWeight: 'bold' } }, ow.name),
-                    !ow.isFetched && ow.type === 'user' && React.createElement(Text, { key: 'hint', style: { color: '#949ba4', fontSize: 9 } }, "Tap refresh to load name")
+                    !ow.isFetched && ow.type === 'user' && React.createElement(Text, { key: 'hint', style: { color: '#949ba4', fontSize: 9 } }, "Tap refresh")
                 ]),
                 React.createElement(View, { key: 'b', style: { backgroundColor: ow.type === 'role' ? '#5865F2' : '#43b581', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 3 } },
                     React.createElement(Text, { style: { color: '#fff', fontSize: 8, fontWeight: 'bold' } }, ow.type === 'role' ? 'ROLE' : 'USER')),
@@ -596,7 +564,7 @@ function StalkerSettings() {
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         React.createElement(View, { key: 'h', style: { padding: 10, backgroundColor: '#2b2d31', marginBottom: 6 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v4.6"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v5.0-dev"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, textAlign: 'center' } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
@@ -604,9 +572,11 @@ function StalkerSettings() {
             React.createElement(TabBtn, { key: '1', id: 'hidden', label: 'Hidden', icon: '🔒' }),
             React.createElement(TabBtn, { key: '2', id: 'perms', label: 'Perms', icon: '🔐' }),
             React.createElement(TabBtn, { key: '3', id: 'user', label: 'User', icon: '👤' }),
-            React.createElement(TabBtn, { key: '4', id: 'search', label: 'Msgs', icon: '💬' })
+            React.createElement(TabBtn, { key: '4', id: 'search', label: 'Msgs', icon: '💬' }),
+            React.createElement(TabBtn, { key: '5', id: 'debug', label: 'Debug', icon: '🐛' })
         ]),
 
+        // Hidden tab
         activeTab === 'hidden' && [
             React.createElement(TouchableOpacity, { key: 'scan', style: { margin: 8, padding: 12, backgroundColor: '#5865F2', borderRadius: 8, alignItems: 'center' }, onPress: scanCurrentGuild },
                 React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold', fontSize: 14 } }, isScanning ? "⏳ Scanning..." : "🔄 Scan Server")),
@@ -618,6 +588,7 @@ function StalkerSettings() {
             ])
         ],
 
+        // Perms tab
         activeTab === 'perms' && [
             !selectedChannel && React.createElement(View, { key: 'no-sel', style: { padding: 30, alignItems: 'center' } }, [
                 React.createElement(Text, { key: 't1', style: { fontSize: 30 } }, "🔐"),
@@ -632,15 +603,16 @@ function StalkerSettings() {
                 ]),
                 React.createElement(View, { key: 'btns', style: { flexDirection: 'row', margin: 6, marginTop: 0 } }, [
                     React.createElement(TouchableOpacity, { key: 'ref', style: { flex: 1, padding: 8, backgroundColor: '#3f4147', borderRadius: 6, marginRight: 2, alignItems: 'center' }, onPress: refreshSelectedChannel },
-                        React.createElement(Text, { style: { color: '#fff', fontSize: 10 } }, "🔄 Refresh Names")),
+                        React.createElement(Text, { style: { color: '#fff', fontSize: 10 } }, "🔄 Refresh")),
                     React.createElement(TouchableOpacity, { key: 'cpy', style: { flex: 1, padding: 8, backgroundColor: '#3f4147', borderRadius: 6, marginLeft: 2, alignItems: 'center' }, onPress: () => { if (safeClipboardCopy(selectedChannel.id)) { showToast("📋 Channel ID copied", getAssetIDByName("Check")); } } },
                         React.createElement(Text, { style: { color: '#b5bac1', fontSize: 9 } }, `📋 Channel ID`))
                 ]),
-                React.createElement(Text, { key: 'hint', style: { color: '#949ba4', fontSize: 9, textAlign: 'center', marginBottom: 4 } }, "Tap any role/user to copy their ID"),
+                React.createElement(Text, { key: 'hint', style: { color: '#949ba4', fontSize: 9, textAlign: 'center', marginBottom: 4 } }, "Tap any role/user to copy ID"),
                 ...selectedChannel.permissions.overwrites.map((ow, i) => React.createElement(OverwriteItem, { key: `ow-${i}`, ow }))
             ]
         ],
 
+        // User tab
         activeTab === 'user' && [
             React.createElement(View, { key: 'input-box', style: { margin: 8, padding: 10, backgroundColor: '#2b2d31', borderRadius: 8 } }, [
                 React.createElement(Text, { key: 'lbl', style: { color: '#fff', fontSize: 11, fontWeight: 'bold', marginBottom: 4 } }, "👤 User ID Lookup"),
@@ -660,6 +632,7 @@ function StalkerSettings() {
             lookupUserInfo && userAccessChannels.length === 0 && React.createElement(Text, { key: 'no', style: { color: '#949ba4', textAlign: 'center', fontSize: 11, marginTop: 10 } }, "No hidden channel access")
         ],
 
+        // Search tab
         activeTab === 'search' && [
             React.createElement(View, { key: 'auto-box', style: { margin: 8, padding: 10, backgroundColor: '#2b2d31', borderRadius: 8 } }, [
                 React.createElement(View, { key: 'row', style: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' } }, [
@@ -667,16 +640,11 @@ function StalkerSettings() {
                         React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 11, fontWeight: 'bold' } }, "💬 Auto-Search"),
                         React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 9 } }, "Copy User ID → auto-copies latest message")
                     ]),
-                    React.createElement(TouchableOpacity, {
-                        key: 'toggle',
-                        style: { padding: 8, backgroundColor: autoSearchToggle ? '#43b581' : '#ed4245', borderRadius: 6 },
-                        onPress: () => toggleAutoSearch(!autoSearchToggle)
-                    }, React.createElement(Text, { style: { color: '#fff', fontSize: 10, fontWeight: 'bold' } }, autoSearchToggle ? "ON" : "OFF"))
+                    React.createElement(TouchableOpacity, { key: 'toggle', style: { padding: 8, backgroundColor: autoSearchToggle ? '#43b581' : '#ed4245', borderRadius: 6 }, onPress: () => toggleAutoSearch(!autoSearchToggle) },
+                        React.createElement(Text, { style: { color: '#fff', fontSize: 10, fontWeight: 'bold' } }, autoSearchToggle ? "ON" : "OFF"))
                 ]),
-                React.createElement(Text, { key: 'note', style: { color: '#949ba4', fontSize: 9, marginTop: 6 } },
-                    isDashboardOpen ? "⏸️ Paused while dashboard is open" : (autoSearchToggle ? "✅ Active" : "❌ Disabled"))
+                React.createElement(Text, { key: 'note', style: { color: '#949ba4', fontSize: 9, marginTop: 6 } }, isDashboardOpen ? "⏸️ Paused while dashboard is open" : (autoSearchToggle ? "✅ Active" : "❌ Disabled"))
             ]),
-
             React.createElement(View, { key: 'search-box', style: { margin: 8, marginTop: 0, padding: 10, backgroundColor: '#2b2d31', borderRadius: 8 } }, [
                 React.createElement(Text, { key: 'lbl', style: { color: '#fff', fontSize: 11, fontWeight: 'bold', marginBottom: 4 } }, "🔍 Manual Search"),
                 React.createElement(View, { key: 'row', style: { flexDirection: 'row', alignItems: 'center' } }, [
@@ -687,9 +655,7 @@ function StalkerSettings() {
                 React.createElement(TouchableOpacity, { key: 'btn', style: { marginTop: 8, padding: 10, backgroundColor: '#5865F2', borderRadius: 6, alignItems: 'center' }, onPress: handleManualSearch },
                     React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold', fontSize: 12 } }, isSearching ? "⏳ Searching..." : "🔍 Find Messages"))
             ]),
-
             searchResults.length > 0 && React.createElement(Text, { key: 'results-title', style: { color: '#fff', fontSize: 11, fontWeight: 'bold', marginLeft: 8, marginTop: 4 } }, `📝 ${searchResults.length} Messages:`),
-
             ...searchResults.slice(0, 25).map((msg, i) =>
                 React.createElement(TouchableOpacity, { key: `msg${i}`, style: { margin: 4, marginHorizontal: 8, padding: 10, backgroundColor: '#2b2d31', borderRadius: 8, borderLeftWidth: 3, borderLeftColor: '#5865F2' }, onPress: () => copyMessageLink(msg) }, [
                     React.createElement(View, { key: 'hdr', style: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 } }, [
@@ -700,6 +666,34 @@ function StalkerSettings() {
                     React.createElement(Text, { key: 'server', style: { color: '#72767d', fontSize: 9, marginTop: 4 } }, `📍 ${msg.guildName}`)
                 ])
             )
+        ],
+
+        // Debug tab
+        activeTab === 'debug' && [
+            React.createElement(View, { key: 'debug-header', style: { margin: 8, padding: 10, backgroundColor: '#2b2d31', borderRadius: 8 } }, [
+                React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 14, fontWeight: 'bold' } }, "🐛 Debug Logs"),
+                React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, marginTop: 4 } }, `${logs.length} log entries`),
+                React.createElement(View, { key: 'btns', style: { flexDirection: 'row', marginTop: 8 } }, [
+                    React.createElement(TouchableOpacity, { key: 'refresh', style: { flex: 1, padding: 8, backgroundColor: '#5865F2', borderRadius: 6, marginRight: 4, alignItems: 'center' }, onPress: () => setLogs(getDebugLogs()) },
+                        React.createElement(Text, { style: { color: '#fff', fontSize: 10 } }, "🔄 Refresh")),
+                    React.createElement(TouchableOpacity, { key: 'clear', style: { flex: 1, padding: 8, backgroundColor: '#ed4245', borderRadius: 6, marginLeft: 4, alignItems: 'center' }, onPress: () => { clearDebugLogs(); setLogs([]); } },
+                        React.createElement(Text, { style: { color: '#fff', fontSize: 10 } }, "🗑️ Clear")),
+                    React.createElement(TouchableOpacity, { key: 'copy', style: { flex: 1, padding: 8, backgroundColor: '#3f4147', borderRadius: 6, marginLeft: 4, alignItems: 'center' }, onPress: () => { if (safeClipboardCopy(logs.join('\n'))) showToast("📋 Logs copied!", getAssetIDByName("Check")); } },
+                        React.createElement(Text, { style: { color: '#fff', fontSize: 10 } }, "📋 Copy"))
+                ])
+            ]),
+            React.createElement(View, { key: 'module-status', style: { margin: 8, marginTop: 0, padding: 10, backgroundColor: '#2b2d31', borderRadius: 8 } }, [
+                React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 12, fontWeight: 'bold', marginBottom: 6 } }, "📦 Module Status"),
+                React.createElement(Text, { key: 'm1', style: { color: UserProfileHeader ? '#43b581' : '#ed4245', fontSize: 10 } }, `UserProfileHeader: ${UserProfileHeader ? '✅' : '❌'}`),
+                React.createElement(Text, { key: 'm2', style: { color: ChannelLongPress ? '#43b581' : '#ed4245', fontSize: 10 } }, `ChannelLongPress: ${ChannelLongPress ? '✅' : '❌'}`),
+                React.createElement(Text, { key: 'm3', style: { color: ActionSheet ? '#43b581' : '#ed4245', fontSize: 10 } }, `ActionSheet: ${ActionSheet ? '✅' : '❌'}`),
+                React.createElement(Text, { key: 'm4', style: { color: Commands ? '#43b581' : '#ed4245', fontSize: 10 } }, `Commands: ${Commands ? '✅' : '❌'}`),
+                React.createElement(Text, { key: 'm5', style: { color: '#949ba4', fontSize: 10, marginTop: 4 } }, `Patches active: ${patches.length}`)
+            ]),
+            ...logs.map((log, i) =>
+                React.createElement(Text, { key: `log${i}`, style: { color: log.includes('ERROR') ? '#ed4245' : log.includes('SUCCESS') ? '#43b581' : '#b5bac1', fontSize: 9, paddingHorizontal: 8, paddingVertical: 2, fontFamily: 'monospace' } }, log)
+            ),
+            logs.length === 0 && React.createElement(Text, { key: 'no-logs', style: { color: '#949ba4', textAlign: 'center', marginTop: 20, fontSize: 11 } }, "No logs yet")
         ]
     ]);
 }
@@ -707,28 +701,59 @@ function StalkerSettings() {
 export const settings = StalkerSettings;
 
 export const onLoad = () => {
-    logger.log("=== STALKER PRO v4.6 ===");
+    debugLog("LOAD", "=== STALKER PRO v5.0-dev ===");
 
+    // Patch Permissions.can
     if (Permissions?.can) {
-        patches.push(after("can", Permissions, ([permID, channel], res) => {
-            if (channel?.realCheck) return res;
-            if (isActivelyScanning && permID === VIEW_CHANNEL) return true;
-            return res;
-        }));
+        try {
+            patches.push(after("can", Permissions, ([permID, channel], res) => {
+                if (channel?.realCheck) return res;
+                if (isActivelyScanning && permID === VIEW_CHANNEL) return true;
+                return res;
+            }));
+            debugLog("PATCH", "✅ Permissions.can patched");
+        } catch (e) { debugLog("ERROR", `Permissions.can patch failed: ${e}`); }
     }
 
+    // Try to patch user profile
+    if (UserProfileHeader) {
+        try {
+            patches.push(after("default", UserProfileHeader, ([props], res) => {
+                debugLog("PROFILE", `UserProfileHeader rendered for user: ${props?.user?.id || 'unknown'}`);
+                // Can't easily add button here without more complex React manipulation
+                return res;
+            }));
+            debugLog("PATCH", "✅ UserProfileHeader patched (monitoring)");
+        } catch (e) { debugLog("ERROR", `UserProfileHeader patch failed: ${e}`); }
+    }
+
+    // Try to patch channel long press
+    if (ChannelLongPress) {
+        try {
+            patches.push(after("default", ChannelLongPress, ([props], res) => {
+                debugLog("CHANNEL", `ChannelLongPress for channel: ${props?.channel?.id || 'unknown'}`);
+                return res;
+            }));
+            debugLog("PATCH", "✅ ChannelLongPress patched (monitoring)");
+        } catch (e) { debugLog("ERROR", `ChannelLongPress patch failed: ${e}`); }
+    }
+
+    // Start clipboard monitor
     if (Clipboard?.getString) {
         clipboardMonitorActive = true;
         checkIntervalId = setInterval(checkClipboardContent, 2000);
+        debugLog("LOAD", "✅ Clipboard monitor started");
     }
 
-    showToast("🔍 Stalker Pro v4.6", getAssetIDByName("Check"));
+    showToast("🔍 Stalker Pro v5.0-dev", getAssetIDByName("Check"));
 };
 
 export const onUnload = () => {
+    debugLog("UNLOAD", "Cleaning up...");
     if (checkIntervalId) { clearInterval(checkIntervalId); checkIntervalId = null; }
     for (const p of patches) { try { p(); } catch { } }
     patches = [];
     isActivelyScanning = false;
     isDashboardOpen = false;
+    debugLog("UNLOAD", `Removed ${patches.length} patches`);
 };
