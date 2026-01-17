@@ -98,6 +98,8 @@ debugLog("INIT", `ChannelLongPress2: ${!!ChannelLongPress2}`);
 debugLog("INIT", `ChannelActionSheet: ${!!ChannelActionSheet}`);
 debugLog("INIT", `ActionSheet: ${!!ActionSheet}`);
 debugLog("INIT", `Commands: ${!!Commands}`);
+debugLog("INIT", `NavigationNative: ${!!NavigationNative}`);
+debugLog("INIT", `useNavigation: ${!!useNavigation}`);
 
 // Log module keys to find correct patch targets
 if (ChannelLongPress) {
@@ -125,6 +127,29 @@ if (ActionSheet) {
         const keys = Object.keys(ActionSheet);
         debugLog("KEYS", `ActionSheet keys: ${keys.join(', ') || 'none'}`);
     } catch (e) { debugLog("ERROR", `Keys read failed: ${e}`); }
+}
+
+// Try to find navigation methods
+const Navigation = findByProps("pushLazy", "popLazy") || findByProps("push", "pop") || findByProps("navigate");
+const NavigationRouter = findByProps("transitionTo", "back");
+const SettingsRouter = findByProps("open", "openSection") || findByName("SettingsRouter", false);
+
+debugLog("INIT", `Navigation: ${!!Navigation}`);
+debugLog("INIT", `NavigationRouter: ${!!NavigationRouter}`);
+debugLog("INIT", `SettingsRouter: ${!!SettingsRouter}`);
+
+if (Navigation) {
+    try {
+        const keys = Object.keys(Navigation);
+        debugLog("KEYS", `Navigation keys: ${keys.join(', ') || 'none'}`);
+    } catch (e) { debugLog("ERROR", `Navigation keys failed: ${e}`); }
+}
+
+if (NavigationRouter) {
+    try {
+        const keys = Object.keys(NavigationRouter);
+        debugLog("KEYS", `NavigationRouter keys: ${keys.join(', ') || 'none'}`);
+    } catch (e) { debugLog("ERROR", `NavigationRouter keys failed: ${e}`); }
 }
 
 
@@ -413,56 +438,67 @@ function formatTimeAgo(timestamp: string): string {
 }
 
 // ========================================
-// QUICK ACCESS: SHOW PERMISSIONS SHEET
+// QUICK ACCESS: NAVIGATE TO DASHBOARD
 // ========================================
 
-function showChannelPermissionsSheet(channelId: string) {
+function openStalkerDashboard() {
+    debugLog("NAV", "Attempting to open Stalker dashboard...");
+
+    // Try various navigation methods
     try {
-        const channel = ChannelStore?.getChannel?.(channelId);
-        if (!channel) {
-            showToast("❌ Channel not found", getAssetIDByName("Small"));
-            return;
+        // Method 1: Try NavigationRouter.transitionTo
+        if (NavigationRouter?.transitionTo) {
+            debugLog("NAV", "Trying NavigationRouter.transitionTo...");
+            // Try to navigate to plugin settings - common route patterns
+            const routes = [
+                "/settings/plugins",
+                "VendettaPlugins",
+                "PluginSettings",
+                "/channels/@me"
+            ];
+            for (const route of routes) {
+                try {
+                    NavigationRouter.transitionTo(route);
+                    debugLog("NAV", `✅ transitionTo('${route}') called`);
+                    return;
+                } catch (e) {
+                    debugLog("NAV", `transitionTo('${route}') failed: ${e}`);
+                }
+            }
         }
 
-        const guildId = channel.guild_id;
-        const permissions = getChannelPermissions(channel, guildId);
-        const channelName = channel.name || "Unknown";
-
-        debugLog("SHEET", `Quick view for ${channelName}: ${permissions.overwrites.length} overwrites`);
-
-        // Copy channel ID automatically
-        safeClipboardCopy(channelId);
-
-        // Build a summary
-        const roles = permissions.overwrites.filter(o => o.type === 'role');
-        const users = permissions.overwrites.filter(o => o.type === 'user');
-
-        // Set context for dashboard
-        quickAccessContext = { type: 'channel', id: channelId };
-
-        // Show summary toast
-        let summary = `🔐 #${channelName}\n`;
-        summary += `📋 Channel ID copied!\n`;
-        summary += `🏷️ ${roles.length} roles • 👤 ${users.length} users`;
-
-        if (roles.length > 0) {
-            summary += `\nRoles: ${roles.slice(0, 3).map(r => r.name).join(', ')}`;
-            if (roles.length > 3) summary += `...`;
+        // Method 2: Try Navigation.push or pushLazy
+        if (Navigation?.pushLazy || Navigation?.push) {
+            debugLog("NAV", "Trying Navigation.push...");
+            const pushFn = Navigation.pushLazy || Navigation.push;
+            try {
+                pushFn("VendettaPlugins");
+                debugLog("NAV", "✅ push('VendettaPlugins') called");
+                return;
+            } catch (e) {
+                debugLog("NAV", `push failed: ${e}`);
+            }
         }
 
-        showToast(summary, getAssetIDByName("Check"));
+        // Method 3: Try SettingsRouter
+        if (SettingsRouter?.open || SettingsRouter?.openSection) {
+            debugLog("NAV", "Trying SettingsRouter...");
+            try {
+                (SettingsRouter.open || SettingsRouter.openSection)("plugins");
+                debugLog("NAV", "✅ SettingsRouter called");
+                return;
+            } catch (e) {
+                debugLog("NAV", `SettingsRouter failed: ${e}`);
+            }
+        }
 
-        // Also log details
-        permissions.overwrites.forEach(ow => {
-            const perms = [...ow.allowed.map(p => `✅${p}`), ...ow.denied.map(p => `❌${p}`)].slice(0, 3).join(' ');
-            debugLog("PERMS", `${ow.type === 'role' ? '🏷️' : '👤'} ${ow.name}: ${perms}`);
-        });
-
-        debugLog("SHEET", "✅ Quick view shown, context set for dashboard");
+        // Fallback: Show helpful toast
+        debugLog("NAV", "❌ All navigation methods failed");
+        showToast("📱 Go to: Settings → Plugins → Stalker Pro", getAssetIDByName("Check"));
 
     } catch (e) {
-        debugLog("ERROR", `showChannelPermissionsSheet failed: ${e}`);
-        showToast("❌ Failed to load permissions", getAssetIDByName("Small"));
+        debugLog("ERROR", `openStalkerDashboard failed: ${e}`);
+        showToast("📱 Go to: Settings → Plugins → Stalker Pro", getAssetIDByName("Check"));
     }
 }
 
@@ -652,7 +688,7 @@ function StalkerSettings() {
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         React.createElement(View, { key: 'h', style: { padding: 10, backgroundColor: '#2b2d31', marginBottom: 6 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v5.6-dev"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v5.7-dev"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, textAlign: 'center' } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
@@ -796,7 +832,7 @@ function openDashboardWithContext(type: 'user' | 'channel', id: string) {
 }
 
 export const onLoad = () => {
-    debugLog("LOAD", "=== STALKER PRO v5.6-dev ===");
+    debugLog("LOAD", "=== STALKER PRO v5.7-dev ===");
 
     // Patch Permissions.can
     if (Permissions?.can) {
@@ -887,21 +923,19 @@ export const onLoad = () => {
                                 borderColor: '#5865F2',
                             },
                             onPress: () => {
-                                debugLog("ACTION", `Stalker pressed for ${channelId}`);
+                                debugLog("ACTION", `Stalker button pressed`);
                                 ActionSheet?.hideActionSheet?.();
                                 // Small delay to let the current sheet close
                                 setTimeout(() => {
-                                    if (channelId) {
-                                        showChannelPermissionsSheet(channelId);
-                                    }
+                                    openStalkerDashboard();
                                 }, 100);
                             }
                         },
                         [
-                            React.createElement(Text, { key: "icon", style: { fontSize: 18, marginRight: 12 } }, "🔐"),
+                            React.createElement(Text, { key: "icon", style: { fontSize: 18, marginRight: 12 } }, "🔍"),
                             React.createElement(View, { key: "txt", style: { flex: 1 } }, [
                                 React.createElement(Text, { key: "t1", style: { color: '#fff', fontSize: 15, fontWeight: 'bold' } }, "Stalker Pro"),
-                                React.createElement(Text, { key: "t2", style: { color: '#b5bac1', fontSize: 11 } }, "View permissions")
+                                React.createElement(Text, { key: "t2", style: { color: '#b5bac1', fontSize: 11 } }, "Open Dashboard")
                             ]),
                             React.createElement(Text, { key: "arrow", style: { color: '#5865F2', fontSize: 14 } }, "→")
                         ]
