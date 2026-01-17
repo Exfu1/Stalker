@@ -9,8 +9,15 @@ import { after, before } from "@vendetta/patcher";
 const { FormSection, FormRow, FormInput, FormSwitchRow } = Forms;
 const { ScrollView, View, Text, TouchableOpacity, TextInput } = General;
 
+// Modal from React Native
+const Modal = ReactNative?.Modal || findByName("Modal", false) || findByProps("Modal")?.Modal;
+
 // BackHandler for navigation
 const BackHandler = ReactNative?.BackHandler || findByProps("addEventListener", "removeEventListener", "exitApp");
+
+// Global state for popup dashboard
+let showDashboardPopup = false;
+let setShowDashboardPopup: ((v: boolean) => void) | null = null;
 
 // Discord stores
 const UserStore = findByStoreName("UserStore");
@@ -438,66 +445,18 @@ function formatTimeAgo(timestamp: string): string {
 }
 
 // ========================================
-// QUICK ACCESS: NAVIGATE TO DASHBOARD
+// QUICK ACCESS: POPUP DASHBOARD
 // ========================================
 
 function openStalkerDashboard() {
-    debugLog("NAV", "Attempting to open Stalker dashboard...");
+    debugLog("NAV", "Opening Stalker popup dashboard...");
 
-    // Try various navigation methods
-    try {
-        // Method 1: Try NavigationRouter.transitionTo
-        if (NavigationRouter?.transitionTo) {
-            debugLog("NAV", "Trying NavigationRouter.transitionTo...");
-            // Try to navigate to plugin settings - common route patterns
-            const routes = [
-                "/settings/plugins",
-                "VendettaPlugins",
-                "PluginSettings",
-                "/channels/@me"
-            ];
-            for (const route of routes) {
-                try {
-                    NavigationRouter.transitionTo(route);
-                    debugLog("NAV", `✅ transitionTo('${route}') called`);
-                    return;
-                } catch (e) {
-                    debugLog("NAV", `transitionTo('${route}') failed: ${e}`);
-                }
-            }
-        }
-
-        // Method 2: Try Navigation.push or pushLazy
-        if (Navigation?.pushLazy || Navigation?.push) {
-            debugLog("NAV", "Trying Navigation.push...");
-            const pushFn = Navigation.pushLazy || Navigation.push;
-            try {
-                pushFn("VendettaPlugins");
-                debugLog("NAV", "✅ push('VendettaPlugins') called");
-                return;
-            } catch (e) {
-                debugLog("NAV", `push failed: ${e}`);
-            }
-        }
-
-        // Method 3: Try SettingsRouter
-        if (SettingsRouter?.open || SettingsRouter?.openSection) {
-            debugLog("NAV", "Trying SettingsRouter...");
-            try {
-                (SettingsRouter.open || SettingsRouter.openSection)("plugins");
-                debugLog("NAV", "✅ SettingsRouter called");
-                return;
-            } catch (e) {
-                debugLog("NAV", `SettingsRouter failed: ${e}`);
-            }
-        }
-
-        // Fallback: Show helpful toast
-        debugLog("NAV", "❌ All navigation methods failed");
-        showToast("📱 Go to: Settings → Plugins → Stalker Pro", getAssetIDByName("Check"));
-
-    } catch (e) {
-        debugLog("ERROR", `openStalkerDashboard failed: ${e}`);
+    // Use global setter to show popup
+    if (setShowDashboardPopup) {
+        setShowDashboardPopup(true);
+        debugLog("NAV", "✅ Popup dashboard activated");
+    } else {
+        debugLog("NAV", "❌ Popup not ready - fallback to toast");
         showToast("📱 Go to: Settings → Plugins → Stalker Pro", getAssetIDByName("Check"));
     }
 }
@@ -688,7 +647,7 @@ function StalkerSettings() {
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         React.createElement(View, { key: 'h', style: { padding: 10, backgroundColor: '#2b2d31', marginBottom: 6 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v5.7-dev"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v5.8-dev"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, textAlign: 'center' } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
@@ -814,15 +773,81 @@ function StalkerSettings() {
                 React.createElement(Text, { key: 'm4', style: { color: Commands ? '#43b581' : '#ed4245', fontSize: 10 } }, `Commands: ${Commands ? '✅' : '❌'}`),
                 React.createElement(Text, { key: 'm5', style: { color: '#949ba4', fontSize: 10, marginTop: 4 } }, `Patches active: ${patches.length}`)
             ]),
-            ...logs.map((log, i) =>
+            ...logs.map((log: string, i: number) =>
                 React.createElement(Text, { key: `log${i}`, style: { color: log.includes('ERROR') ? '#ed4245' : log.includes('SUCCESS') ? '#43b581' : '#b5bac1', fontSize: 9, paddingHorizontal: 8, paddingVertical: 2, fontFamily: 'monospace' } }, log)
             ),
-            logs.length === 0 && React.createElement(Text, { key: 'no-logs', style: { color: '#949ba4', textAlign: 'center', marginTop: 20, fontSize: 11 } }, "No logs yet")
+            logs.length === 0 && React.createElement(Text, { key: 'no-logs', style: { color: '#949ba4', textAlign: 'center', marginTop: 20, fontSize: 11 }, }, "No logs yet")
         ]
     ]);
 }
 
+// ========================================
+// POPUP DASHBOARD COMPONENT
+// ========================================
+
+function PopupDashboard() {
+    const [visible, setVisible] = React.useState(false);
+
+    // Register the global setter so openStalkerDashboard can trigger this
+    React.useEffect(() => {
+        setShowDashboardPopup = setVisible;
+        debugLog("POPUP", "Popup dashboard registered");
+        return () => {
+            setShowDashboardPopup = null;
+        };
+    }, []);
+
+    if (!Modal) {
+        debugLog("POPUP", "Modal not available");
+        return null;
+    }
+
+    if (!visible) return null;
+
+    return React.createElement(
+        Modal,
+        {
+            visible: true,
+            animationType: 'slide',
+            presentationStyle: 'fullScreen',
+            onRequestClose: () => setVisible(false)
+        },
+        React.createElement(View, {
+            style: {
+                flex: 1,
+                backgroundColor: '#1e1f22'
+            }
+        }, [
+            // Close button header
+            React.createElement(View, {
+                key: 'header',
+                style: {
+                    flexDirection: 'row',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: 12,
+                    backgroundColor: '#2b2d31',
+                    borderBottomWidth: 1,
+                    borderBottomColor: '#1e1f22'
+                }
+            }, [
+                React.createElement(Text, { key: 'title', style: { color: '#fff', fontSize: 16, fontWeight: 'bold' } }, "🔍 Stalker Pro"),
+                React.createElement(TouchableOpacity, {
+                    key: 'close',
+                    style: { padding: 8, backgroundColor: '#ed4245', borderRadius: 6 },
+                    onPress: () => setVisible(false)
+                }, React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold' } }, "✕ Close"))
+            ]),
+            // Dashboard content
+            React.createElement(StalkerSettings, { key: 'content' })
+        ])
+    );
+}
+
 export const settings = StalkerSettings;
+
+// Render the popup dashboard globally
+// This needs to be added to the app somehow - we'll try patching a root component
 
 // Helper to open dashboard with context
 function openDashboardWithContext(type: 'user' | 'channel', id: string) {
@@ -832,12 +857,54 @@ function openDashboardWithContext(type: 'user' | 'channel', id: string) {
 }
 
 export const onLoad = () => {
-    debugLog("LOAD", "=== STALKER PRO v5.7-dev ===");
+    debugLog("LOAD", "=== STALKER PRO v5.8-dev ===");
+
+    // Check if Modal is available
+    debugLog("INIT", `Modal available: ${!!Modal}`);
+
+    // Try to patch a root component to inject our popup
+    // We'll try patching the App or Navigator component
+    const AppContainer = findByName("App", false) || findByName("AppContainer", false) || findByName("Navigator", false);
+
+    if (AppContainer) {
+        try {
+            patches.push(after("default", AppContainer, (args: any, res: any) => {
+                if (!res) return res;
+                // Wrap the result with our popup dashboard
+                return React.createElement(View, { style: { flex: 1 } }, [
+                    res,
+                    React.createElement(PopupDashboard, { key: 'stalker-popup' })
+                ]);
+            }));
+            debugLog("PATCH", "✅ App container patched for popup");
+        } catch (e) {
+            debugLog("ERROR", `App container patch failed: ${e}`);
+        }
+    } else {
+        debugLog("INIT", "App container not found, trying alternative...");
+
+        // Alternative: Try to patch MessageList or similar that's always rendered
+        const ChatContainer = findByName("Chat", false) || findByName("ChatContainer", false);
+        if (ChatContainer) {
+            try {
+                patches.push(after("default", ChatContainer, (args: any, res: any) => {
+                    if (!res) return res;
+                    return React.createElement(View, { style: { flex: 1 } }, [
+                        res,
+                        React.createElement(PopupDashboard, { key: 'stalker-popup' })
+                    ]);
+                }));
+                debugLog("PATCH", "✅ Chat container patched for popup");
+            } catch (e) {
+                debugLog("ERROR", `Chat container patch failed: ${e}`);
+            }
+        }
+    }
 
     // Patch Permissions.can
     if (Permissions?.can) {
         try {
-            patches.push(after("can", Permissions, ([permID, channel], res) => {
+            patches.push(after("can", Permissions, ([permID, channel]: any, res: any) => {
                 if (channel?.realCheck) return res;
                 if (isActivelyScanning && permID === VIEW_CHANNEL) return true;
                 return res;
