@@ -469,57 +469,44 @@ function openStalkerDashboard(channelId?: string) {
         quickAccessContext = { type: 'channel', id: channelId };
     }
 
-    // Method 1: Try NavigationRouter.transitionTo with VendettaCustomPage
-    if (NavigationRouter?.transitionTo) {
+    // Log current navigation history for debugging
+    if (NavigationRouter?.getHistory) {
         try {
-            // VendettaCustomPage is the standard route for plugin pages
-            // Pass our component as the render parameter
-            NavigationRouter.transitionTo("VendettaCustomPage", {
-                title: "Stalker Pro",
-                render: StalkerSettings,
-                key: "StalkerPro"
-            });
-            debugLog("NAV", "✅ transitionTo VendettaCustomPage called");
-            return;
+            const history = NavigationRouter.getHistory();
+            debugLog("NAV", `History entries: ${history?.length || 0}`);
+            if (history?.length > 0) {
+                const current = history[history.length - 1];
+                debugLog("NAV", `Current route: ${current?.name || current?.routeName || JSON.stringify(current)?.slice(0, 100)}`);
+            }
         } catch (e) {
-            debugLog("NAV", `VendettaCustomPage failed: ${e}`);
+            debugLog("NAV", `History read failed: ${e}`);
         }
+    }
 
-        // Fallback: Try other route names Vendetta might use
-        const routeNames = [
-            "VendettaPlugin",
-            "PluginSettings",
-            "VENDETTA_CUSTOM_PAGE",
-            "CustomPage"
+    // Try navigation to known Discord routes
+    if (NavigationRouter?.transitionTo) {
+        // Try valid Discord routes that might lead to settings
+        const discordRoutes = [
+            "user_settings",           // Settings main
+            "SETTINGS",                // Alternative
+            "/settings",               // Path style  
+            "settings/overview",       // Settings overview
+            "app_settings",            // App settings
         ];
 
-        for (const route of routeNames) {
+        for (const route of discordRoutes) {
             try {
-                NavigationRouter.transitionTo(route, {
-                    title: "Stalker Pro",
-                    render: StalkerSettings
-                });
-                debugLog("NAV", `✅ transitionTo ${route} called`);
-                return;
+                debugLog("NAV", `Trying route: ${route}`);
+                NavigationRouter.transitionTo(route);
+                debugLog("NAV", `✅ transitionTo('${route}') called - checking if navigated...`);
+                // Don't return - check if navigation happened
             } catch (e) {
-                debugLog("NAV", `${route} failed: ${e}`);
+                debugLog("NAV", `❌ ${route} threw: ${e}`);
             }
         }
     }
 
-    // Method 2: Try direct navigation to settings plugins
-    if (NavigationRouter?.transitionTo) {
-        try {
-            NavigationRouter.transitionTo("/settings/plugins");
-            debugLog("NAV", "✅ transitionTo /settings/plugins called (fallback)");
-            showToast("📱 Tap 'Stalker Pro' in the list", getAssetIDByName("Check"));
-            return;
-        } catch (e) {
-            debugLog("NAV", `Settings navigation failed: ${e}`);
-        }
-    }
-
-    // Method 3: Fallback - copy channel ID and show info
+    // For now, since navigation doesn't work, provide useful fallback
     if (channelId) {
         const channel = ChannelStore?.getChannel?.(channelId);
         if (channel) {
@@ -527,16 +514,34 @@ function openStalkerDashboard(channelId?: string) {
             const permissions = getChannelPermissions(channel, channel.guild_id);
             const roles = permissions.overwrites.filter(o => o.type === 'role');
             const users = permissions.overwrites.filter(o => o.type === 'user');
+            const isHidden = permissions.overwrites.some(o =>
+                o.name === '@everyone' && o.denied.some(p => p.includes('VIEW'))
+            );
 
             let info = `🔍 #${channel.name}\n`;
-            info += `📋 ID copied: ${channelId}\n`;
-            info += `👥 Access: ${roles.length} roles, ${users.length} users`;
+            info += `📋 ID: ${channelId} (copied)\n`;
+            info += isHidden ? `🔒 HIDDEN\n` : '';
+            info += `👥 ${roles.length} roles, ${users.length} users\n`;
+            if (roles.length > 0) {
+                info += `Roles: ${roles.slice(0, 3).map(r => r.name).join(', ')}`;
+            }
 
             showToast(info, getAssetIDByName("Check"));
-            debugLog("NAV", "✅ Fallback: Quick info shown");
+
+            // Log detailed permissions to debug tab
+            debugLog("PERMS", `=== #${channel.name} permissions ===`);
+            permissions.overwrites.forEach(ow => {
+                const allowed = ow.allowed.slice(0, 5).join(', ');
+                const denied = ow.denied.slice(0, 5).join(', ');
+                debugLog("PERMS", `${ow.type === 'role' ? '🏷️' : '👤'} ${ow.name}`);
+                if (allowed) debugLog("PERMS", `  ✅ ${allowed}`);
+                if (denied) debugLog("PERMS", `  ❌ ${denied}`);
+            });
+
+            debugLog("NAV", "✅ Quick info shown, full details in Debug tab");
         }
     } else {
-        showToast("📱 Go to: Settings → Plugins → Stalker Pro", getAssetIDByName("Check"));
+        showToast("📱 Settings → Plugins → Stalker Pro\nCheck Debug tab for channel permissions", getAssetIDByName("Check"));
     }
 }
 
@@ -726,7 +731,7 @@ function StalkerSettings() {
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         React.createElement(View, { key: 'h', style: { padding: 10, backgroundColor: '#2b2d31', marginBottom: 6 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v7.0-dev"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v7.1-dev"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, textAlign: 'center' } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
@@ -936,7 +941,7 @@ function openDashboardWithContext(type: 'user' | 'channel', id: string) {
 }
 
 export const onLoad = () => {
-    debugLog("LOAD", "=== STALKER PRO v7.0-dev ===");
+    debugLog("LOAD", "=== STALKER PRO v7.1-dev ===");
 
     // Check if Modal is available
     debugLog("INIT", `Modal available: ${!!Modal}`);
