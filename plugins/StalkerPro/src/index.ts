@@ -707,7 +707,7 @@ function StalkerSettings() {
 export const settings = StalkerSettings;
 
 export const onLoad = () => {
-    logger.log("=== STALKER PRO v4.6 ===");
+    logger.log("=== STALKER PRO v4.8 ===");
 
     if (Permissions?.can) {
         patches.push(after("can", Permissions, ([permID, channel], res) => {
@@ -722,7 +722,7 @@ export const onLoad = () => {
         checkIntervalId = setInterval(checkClipboardContent, 2000);
     }
 
-    showToast("🔍 Stalker Pro v4.6", getAssetIDByName("Check"));
+    showToast("🔍 Stalker Pro v4.8", getAssetIDByName("Check"));
 };
 
 export const onUnload = () => {
