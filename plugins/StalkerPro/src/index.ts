@@ -596,7 +596,7 @@ function StalkerSettings() {
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         React.createElement(View, { key: 'h', style: { padding: 10, backgroundColor: '#2b2d31', marginBottom: 6 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v4.6"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v4.8"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, textAlign: 'center' } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 

@@ -1,125 +1,160 @@
-# Stalker Pro (Revenge/Vendetta Version)
+# 🔍 Stalker Pro
 
-A Revenge/Vendetta plugin for Discord Mobile that adds user activity tracking features.
+A powerful Revenge/Vendetta plugin for Discord Mobile that helps you discover hidden channels, analyze permissions, and find user activity across servers.
 
-## Features
+![Version](https://img.shields.io/badge/version-4.8-blue)
+![Platform](https://img.shields.io/badge/platform-Android%20%7C%20iOS-green)
+![License](https://img.shields.io/badge/license-MIT-yellow)
 
-### 🔍 Recent Messages
-- Find a user's recent messages across all mutual servers
-- Shows server icon, channel name, and relative time
-- Click to jump directly to the message
+---
 
-### 🔒 Hidden Channels
-- See which hidden channels a user can access (but you can't)
-- Dropdown to select different mutual servers
-- View channel types (text, voice, announcements, etc.)
+## 📲 Installation
 
-## Installation
+### Step 1: Install Revenge (Discord Mod)
 
-### Method 1: Direct URL (Recommended)
+Revenge is a Discord mobile mod that allows you to install plugins. You need to install it first.
 
-1. Open Revenge/Vendetta on your device
-2. Go to Settings → Plugins
-3. Tap the **+** button
-4. Enter this URL:
+#### For Android:
+1. Download Revenge from: **https://github.com/revenge-mod/revenge-bundle/releases**
+2. Download the latest `.apk` file
+3. Install the APK (you may need to enable "Install from unknown sources")
+4. Open the modded Discord and log in
 
-```
-https://raw.githubusercontent.com/YOUR_USERNAME/StalkerProRevenge/main/
-```
+#### For iOS:
+1. You need a jailbroken device or use a sideloading tool like **AltStore** or **Sideloadly**
+2. Download the Revenge IPA from: **https://github.com/revenge-mod/revenge-bundle/releases**
+3. Sideload the IPA using your preferred method
+4. Open the modded Discord and log in
 
-Replace `YOUR_USERNAME` with your GitHub username after uploading.
+### Step 2: Install Stalker Pro Plugin
 
-### Method 2: From Source
-
-1. Clone/download this repository
-2. Upload to your GitHub
-3. Follow Method 1 with your GitHub URL
-
-## Usage
-
-1. Open Discord on your device
-2. Tap on any user's profile (long press on avatar)
-3. Scroll down to see the **"🔍 Stalker Pro"** section
-4. Tap **"Recent Messages"** to find their latest messages
-5. Tap **"Hidden Channels"** to see channels they can access
-
-## Project Structure
+1. Open Discord (with Revenge installed)
+2. Go to **Settings** (bottom right gear icon)
+3. Scroll down and tap **Plugins**
+4. Tap the **+** button (top right)
+5. Paste this URL:
 
 ```
-StalkerProRevenge/
-├── manifest.json           # Plugin metadata
-├── src/
-│   ├── index.ts           # Main plugin entry point
-│   ├── components/
-│   │   ├── StalkerSection.tsx       # Main UI section
-│   │   ├── RecentMessagesSheet.tsx  # Recent messages view
-│   │   ├── HiddenChannelsSheet.tsx  # Hidden channels view
-│   │   └── index.ts                 # Component exports
-│   └── utils/
-│       ├── messageSearcher.ts       # Message search logic
-│       ├── channelChecker.ts        # Permission checking
-│       └── index.ts                 # Utility exports
-└── README.md
+https://exfu1.github.io/Stalker/StalkerPro/
 ```
 
-## How It Works
+6. Tap **Install**
+7. The plugin will download and install automatically
 
-### Recent Messages
-- Iterates through all mutual guilds with the target user
-- Searches cached messages in each channel
-- Sorts by timestamp and displays newest first
-- Click to navigate directly to the message
+---
 
-### Hidden Channels
-- Compares permission overwrites between you and target user
-- Identifies channels where:
-  - Target user has VIEW_CHANNEL permission
-  - You don't have VIEW_CHANNEL permission
-- Shows channel type icons for easy identification
+## 🎯 Features
 
-## Technical Details
+### 🔒 Hidden Channels Tab
+Discover channels in a server that you don't have access to.
 
-- Built for Revenge/Vendetta Discord mod
-- Uses React Native components
-- Integrates with Discord's internal stores:
-  - `UserStore` - User data
-  - `GuildStore` - Server data
-  - `ChannelStore` - Channel data
-  - `MessageStore` - Message cache
-  - `PermissionStore` - Permission data
-  - `GuildMemberStore` - Member roles
+**How to use:**
+1. Open any server in Discord
+2. Go to Settings → Plugins → **Stalker Pro**
+3. You'll see the dashboard with the current server selected
+4. Tap **Scan** to find hidden channels
+5. Tap any channel to see who has access to it
 
-## GitHub Setup for Plugin URL
+**What you'll see:**
+- Channel name and type (text, voice, announcement, etc.)
+- Parent category
+- List of roles and users with access
+- Specific permissions (allowed/denied)
 
-1. Create a new GitHub repository
-2. Upload all files from this folder
-3. Go to repository Settings → Pages
-4. Enable GitHub Pages (optional, for hosting)
-5. Your plugin URL will be:
-   ```
-   https://raw.githubusercontent.com/<username>/<repo>/main/
-   ```
+---
 
-## Disclaimer
+### 👤 User Lookup Tab
+Find which hidden channels a specific user can access.
 
-⚠️ **Educational purposes only.** Using Discord mods violates Discord's Terms of Service. Use at your own risk.
+**How to use:**
+1. Go to the **User** tab in the dashboard
+2. Enter a User ID or tap **📋 Paste** to paste from clipboard
+3. Tap **Lookup**
+4. See all hidden channels that user can access in the current server
 
-## License
+**Tip:** To get a User ID, enable Developer Mode in Discord settings, then long-press on any user and tap "Copy ID"
+
+---
+
+### 🔍 Search Tab
+Find a user's recent messages across all mutual servers.
+
+**How to use:**
+1. Go to the **Search** tab in the dashboard
+2. Enter a User ID or tap **📋 Paste** to paste from clipboard
+3. Tap **Search**
+4. See their recent messages with timestamps
+5. Tap any message to copy the message link
+
+**Auto-Search Feature:**
+- When enabled, the plugin automatically searches when you copy a User ID to clipboard
+- Toggle this on/off with the "Auto-search on clipboard" switch
+- Works even outside the dashboard!
+
+---
+
+### 📊 Permissions Tab
+View detailed permissions for any channel.
+
+**How to use:**
+1. From the Hidden Channels tab, tap any channel
+2. The Permissions tab opens automatically
+3. See all roles and users with access
+4. Each entry shows:
+  - ✅ Allowed permissions (green)
+  - ❌ Denied permissions (red)
+5. Tap any role/user to copy their ID
+6. Tap **🔄 Refresh** to reload user data
+
+---
+
+### 📋 Debug Tab
+View all plugin activity logs for troubleshooting.
+
+**What it shows:**
+- Channel scans and results
+- API requests
+- Permission lookups
+- Any errors that occur
+
+---
+
+## 💡 Tips & Tricks
+
+### Quick Access
+- **Copy any User ID** while the plugin is running → it auto-searches their messages
+- **Tap any role/user** in permissions view → copies their ID
+- **Tap any message** in search results → copies the message link
+
+### Back Button Navigation
+- Use your phone's back button to navigate within the dashboard
+- Goes: Permissions → Channel List → Tab → Exit
+
+### Finding User IDs
+1. Enable **Developer Mode**: Settings → App Settings → Advanced → Developer Mode
+2. Long-press on any user
+3. Tap **Copy User ID**
+
+---
+
+## ⚠️ Disclaimer
+
+This plugin is for **educational purposes only**. Using Discord modifications violates Discord's Terms of Service. Use at your own risk. The developers are not responsible for any consequences of using this plugin.
+
+---
+
+## 📄 License
 
 MIT License - Feel free to modify and redistribute.
 
 ---
 
-## Quick Setup
+## 🔗 Links
 
-```bash
-# 1. Create GitHub repo named "StalkerProRevenge"
+- **Plugin URL:** `https://exfu1.github.io/Stalker/StalkerPro/`
+- **Source Code:** [GitHub](https://github.com/Exfu1/Stalker)
+- **Revenge Discord Mod:** [GitHub](https://github.com/revenge-mod/revenge-bundle)
 
-# 2. Upload these files to the repo
+---
 
-# 3. In Revenge/Vendetta:
-#    Settings → Plugins → + → Enter URL:
-#    https://raw.githubusercontent.com/YOUR_USERNAME/StalkerProRevenge/main/
-```
-
-**That's it! The plugin will be installed and ready to use.**
+Made with ❤️ for the Discord modding community
