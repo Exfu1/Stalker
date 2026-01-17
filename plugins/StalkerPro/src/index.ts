@@ -427,95 +427,39 @@ function showChannelPermissionsSheet(channelId: string) {
         const guildId = channel.guild_id;
         const permissions = getChannelPermissions(channel, guildId);
         const channelName = channel.name || "Unknown";
-        const channelType = getChannelTypeName(channel.type);
 
-        debugLog("SHEET", `Showing permissions for ${channelName}`);
+        debugLog("SHEET", `Quick view for ${channelName}: ${permissions.overwrites.length} overwrites`);
 
-        // Build the permissions content
-        const roleColor = (c: number) => c ? `#${c.toString(16).padStart(6, '0')}` : '#99AAB5';
+        // Copy channel ID automatically
+        safeClipboardCopy(channelId);
 
-        const PermRow = ({ ow }: { ow: PermissionOverwrite }) => React.createElement(
-            TouchableOpacity,
-            {
-                key: ow.id,
-                style: {
-                    backgroundColor: '#2b2d31',
-                    marginVertical: 4,
-                    marginHorizontal: 12,
-                    padding: 10,
-                    borderRadius: 8,
-                    borderLeftWidth: 3,
-                    borderLeftColor: ow.type === 'role' ? roleColor(ow.color) : '#43b581'
-                },
-                onPress: () => {
-                    if (safeClipboardCopy(ow.id)) {
-                        showToast(`📋 ${ow.type === 'role' ? 'Role' : 'User'} ID copied!`, getAssetIDByName("Check"));
-                    }
-                }
-            },
-            [
-                React.createElement(View, { key: 'h', style: { flexDirection: 'row', alignItems: 'center' } }, [
-                    React.createElement(Text, { key: 'i', style: { fontSize: 12, marginRight: 6 } }, ow.type === 'role' ? '🏷️' : '👤'),
-                    React.createElement(Text, { key: 'n', style: { color: ow.type === 'role' ? roleColor(ow.color) : '#43b581', fontSize: 13, fontWeight: 'bold', flex: 1 } }, ow.name),
-                    React.createElement(Text, { key: 'c', style: { color: '#949ba4', fontSize: 9 } }, "📋")
-                ]),
-                ow.allowed.length > 0 && React.createElement(View, { key: 'a', style: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 4 } },
-                    ow.allowed.slice(0, 4).map((p, i) => React.createElement(Text, { key: `a${i}`, style: { color: '#43b581', fontSize: 9, marginRight: 4 } }, `✅${p}`))
-                ),
-                ow.denied.length > 0 && React.createElement(View, { key: 'd', style: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 2 } },
-                    ow.denied.slice(0, 4).map((p, i) => React.createElement(Text, { key: `d${i}`, style: { color: '#ed4245', fontSize: 9, marginRight: 4 } }, `❌${p}`))
-                )
-            ]
-        );
+        // Build a summary
+        const roles = permissions.overwrites.filter(o => o.type === 'role');
+        const users = permissions.overwrites.filter(o => o.type === 'user');
 
-        // Create the sheet content
-        const SheetContent = () => React.createElement(
-            ScrollView,
-            { style: { maxHeight: 400, backgroundColor: '#1e1f22' } },
-            [
-                // Header
-                React.createElement(View, { key: 'hdr', style: { padding: 16, borderBottomWidth: 1, borderBottomColor: '#2b2d31' } }, [
-                    React.createElement(View, { key: 'r', style: { flexDirection: 'row', alignItems: 'center' } }, [
-                        React.createElement(Text, { key: 'i', style: { fontSize: 24, marginRight: 10 } }, channelType),
-                        React.createElement(Text, { key: 'n', style: { color: '#fff', fontSize: 18, fontWeight: 'bold' } }, channelName)
-                    ]),
-                    React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 11, marginTop: 4 } },
-                        `${permissions.overwrites.length} permission overwrites • Tap to copy ID`)
-                ]),
-                // Permission rows
-                ...permissions.overwrites.map((ow) => React.createElement(PermRow, { key: ow.id, ow })),
-                // Copy channel ID button
-                React.createElement(TouchableOpacity, {
-                    key: 'cpy',
-                    style: { margin: 12, padding: 12, backgroundColor: '#5865F2', borderRadius: 8, alignItems: 'center' },
-                    onPress: () => {
-                        if (safeClipboardCopy(channelId)) {
-                            showToast("📋 Channel ID copied!", getAssetIDByName("Check"));
-                        }
-                    }
-                }, React.createElement(Text, { style: { color: '#fff', fontWeight: 'bold' } }, "📋 Copy Channel ID")),
-                // Close button
-                React.createElement(TouchableOpacity, {
-                    key: 'close',
-                    style: { margin: 12, marginTop: 0, padding: 12, backgroundColor: '#2b2d31', borderRadius: 8, alignItems: 'center' },
-                    onPress: () => ActionSheet?.hideActionSheet?.()
-                }, React.createElement(Text, { style: { color: '#b5bac1' } }, "Close"))
-            ]
-        );
+        // Set context for dashboard
+        quickAccessContext = { type: 'channel', id: channelId };
 
-        // Try to show using openLazy
-        if (ActionSheet?.openLazy) {
-            ActionSheet.openLazy(
-                Promise.resolve({ default: SheetContent }),
-                "StalkerPermissions"
-            );
-            debugLog("SHEET", "✅ Opened via openLazy");
-        } else {
-            // Fallback: just show a toast with summary
-            const summary = permissions.overwrites.map(o => `${o.type === 'role' ? '🏷️' : '👤'} ${o.name}`).slice(0, 3).join(', ');
-            showToast(`🔐 ${channelName}: ${summary}...`, getAssetIDByName("Check"));
-            debugLog("SHEET", "Fallback: toast only (no openLazy)");
+        // Show summary toast
+        let summary = `🔐 #${channelName}\n`;
+        summary += `📋 Channel ID copied!\n`;
+        summary += `🏷️ ${roles.length} roles • 👤 ${users.length} users`;
+
+        if (roles.length > 0) {
+            summary += `\nRoles: ${roles.slice(0, 3).map(r => r.name).join(', ')}`;
+            if (roles.length > 3) summary += `...`;
         }
+
+        showToast(summary, getAssetIDByName("Check"));
+
+        // Also log details
+        permissions.overwrites.forEach(ow => {
+            const perms = [...ow.allowed.map(p => `✅${p}`), ...ow.denied.map(p => `❌${p}`)].slice(0, 3).join(' ');
+            debugLog("PERMS", `${ow.type === 'role' ? '🏷️' : '👤'} ${ow.name}: ${perms}`);
+        });
+
+        debugLog("SHEET", "✅ Quick view shown, context set for dashboard");
+
     } catch (e) {
         debugLog("ERROR", `showChannelPermissionsSheet failed: ${e}`);
         showToast("❌ Failed to load permissions", getAssetIDByName("Small"));
@@ -708,7 +652,7 @@ function StalkerSettings() {
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         React.createElement(View, { key: 'h', style: { padding: 10, backgroundColor: '#2b2d31', marginBottom: 6 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v5.5-dev"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v5.6-dev"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, textAlign: 'center' } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
@@ -852,7 +796,7 @@ function openDashboardWithContext(type: 'user' | 'channel', id: string) {
 }
 
 export const onLoad = () => {
-    debugLog("LOAD", "=== STALKER PRO v5.5-dev ===");
+    debugLog("LOAD", "=== STALKER PRO v5.6-dev ===");
 
     // Patch Permissions.can
     if (Permissions?.can) {
