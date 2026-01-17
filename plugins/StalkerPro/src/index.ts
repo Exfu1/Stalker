@@ -140,6 +140,32 @@ if (ActionSheet) {
 // Final ActionSheetRow selection
 const FinalActionSheetRow = ActionSheetRow || ActionSheetRowFromModule;
 
+// Log ActionSheetRow structure to understand its props
+if (FinalActionSheetRow) {
+    try {
+        const rowKeys = Object.keys(FinalActionSheetRow);
+        debugLog("DISCOVER", `FinalActionSheetRow keys: ${rowKeys.join(', ') || 'none'}`);
+        debugLog("DISCOVER", `FinalActionSheetRow type: ${typeof FinalActionSheetRow}`);
+        if (FinalActionSheetRow.displayName) {
+            debugLog("DISCOVER", `FinalActionSheetRow.displayName: ${FinalActionSheetRow.displayName}`);
+        }
+        if (FinalActionSheetRow.propTypes) {
+            const propTypeKeys = Object.keys(FinalActionSheetRow.propTypes);
+            debugLog("DISCOVER", `FinalActionSheetRow.propTypes: ${propTypeKeys.join(', ')}`);
+        }
+        if (FinalActionSheetRow.defaultProps) {
+            const defaultPropKeys = Object.keys(FinalActionSheetRow.defaultProps);
+            debugLog("DISCOVER", `FinalActionSheetRow.defaultProps: ${defaultPropKeys.join(', ')}`);
+        }
+        // Try to see if it's a function component
+        if (typeof FinalActionSheetRow === 'function') {
+            debugLog("DISCOVER", `FinalActionSheetRow.length (params): ${FinalActionSheetRow.length}`);
+        }
+    } catch (e) {
+        debugLog("ERROR", `ActionSheetRow exploration failed: ${e}`);
+    }
+}
+
 // Log what we found - with more detail
 debugLog("INIT", `UserProfileHeader: ${!!UserProfileHeader}`);
 debugLog("INIT", `UserProfileSection: ${!!UserProfileSection}`);
@@ -786,7 +812,7 @@ function StalkerSettings() {
 
     return React.createElement(ScrollView, { style: { flex: 1, backgroundColor: '#1e1f22' } }, [
         React.createElement(View, { key: 'h', style: { padding: 10, backgroundColor: '#2b2d31', marginBottom: 6 } }, [
-            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v7.2-dev"),
+            React.createElement(Text, { key: 't', style: { color: '#fff', fontSize: 16, fontWeight: 'bold', textAlign: 'center' } }, "🔍 Stalker Pro v7.3-dev"),
             React.createElement(Text, { key: 's', style: { color: '#b5bac1', fontSize: 10, textAlign: 'center' } }, selectedGuild ? `📍 ${selectedGuild.name}` : "Open a server")
         ]),
 
@@ -996,7 +1022,7 @@ function openDashboardWithContext(type: 'user' | 'channel', id: string) {
 }
 
 export const onLoad = () => {
-    debugLog("LOAD", "=== STALKER PRO v7.2-dev ===");
+    debugLog("LOAD", "=== STALKER PRO v7.3-dev ===");
 
     // Check if Modal is available
     debugLog("INIT", `Modal available: ${!!Modal}`);
